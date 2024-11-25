@@ -1,4 +1,5 @@
 import os
+import glob
 import wandb
 import numpy as np
 import torch
@@ -70,7 +71,8 @@ class SpeechUnitTrainer:
             wandb.init(project=project_name)
             
         # Create checkpoint directory
-        os.makedirs(checkpoint_dir, exist_ok=True)
+        if self.checkpoint_dir:
+            os.makedirs(checkpoint_dir, exist_ok=True)
         
     def train(self):
         """Main training loop"""
@@ -130,7 +132,7 @@ class SpeechUnitTrainer:
                 print(f"Epoch {epoch + 1}: Train Loss = {avg_train_loss:.4f}")
             
             # Save checkpoint
-            if self.checkpoint_dir:
+            if self.checkpoint_dir and epoch % 3 == 0:
                 self.save_checkpoint(f"checkpoint_epoch_{epoch + 1}.pth")
     
     def training_step(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
@@ -176,11 +178,17 @@ class SpeechUnitTrainer:
     
     def save_checkpoint(self, filename: str):
         """Save model checkpoint"""
+        # Helper function to manage checkpoint files
+        def manage_checkpoints(ckpt_dir, max_checkpoints=2):
+            checkpoint_files = sorted(glob.glob(os.path.join(ckpt_dir, "checkpoint_epoch_*.pth")))
+            if len(checkpoint_files) > max_checkpoints:
+                os.remove(checkpoint_files[0])  # Delete the oldest checkpoint
         checkpoint_path = os.path.join(self.checkpoint_dir, filename)
         torch.save({
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
         }, checkpoint_path)
+        manage_checkpoints(self.checkpoint_dir)
     
     def load_checkpoint(self, filename: str):
         """Load model checkpoint"""
@@ -212,7 +220,7 @@ if __name__ == "__main__":
         # Convert to a Hugging Face Dataset
         hf_dataset = Dataset.from_list(collected_samples)
         return hf_dataset
-    test_ds = collect_and_save(ds['train'], num_samples=64)
+    test_ds = collect_and_save(ds['train'], num_samples=10000)
 
     from model import *
     from data import *
@@ -227,10 +235,10 @@ if __name__ == "__main__":
         model=model,
         train_dataset=train_dataset,
         val_dataset=None,
-        batch_size=16,
-        num_epochs=3,
+        batch_size=32,
+        num_epochs=300,
         lr=2e-4,
-        use_wandb=False,  # Set to False if you don't want to use Weights & Biases
-        # project_name="speech_unit_training"
+        use_wandb=True,  # Set to False if you don't want to use Weights & Biases
+        project_name="speech_unit_training"
     )
     trainer.train()
