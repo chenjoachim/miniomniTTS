@@ -139,21 +139,21 @@ class SpeechUnitTrainer:
         """Perform a single training step with Teacher Forcing."""
         # Move batch to device
         input_ids = batch['input_ids'].to(self.device)
-        # attention_mask = batch['attention_mask'].to(self.device)
+        attention_mask = batch['attention_mask'].to(self.device)
         labels = batch['labels'].to(self.device)
 
         # Prepare for Teacher Forcing
         batch_size, seq_len = input_ids.shape
         loss = 0.0  # Accumulate loss over the sequence
 
-        for t in range(seq_len):
+        for t in range(1, seq_len-1):
             # Take the token at position `t` for all batches
             current_input_ids = input_ids[:, :t]  # Shape: (batch_size, seq_len)
             current_audio_ids = labels[:, :, :t]
             # current_attention_mask = attention_mask[:, t].unsqueeze(1)  # Shape: (batch_size, 1)
             
             # Forward pass for the current token
-            logits = self.model(input_ids=current_input_ids, audio_ids=current_audio_ids, hidden_state=hidden_state)
+            logits = self.model(input_ids=current_input_ids, audio_ids=current_audio_ids, attention_mask=attention_mask)
             # Shape: (batch_size, 8, codebook_size)
             
             # Calculate loss for the current token
@@ -231,25 +231,40 @@ if __name__ == "__main__":
         # Convert to a Hugging Face Dataset
         hf_dataset = Dataset.from_list(collected_samples)
         return hf_dataset
-    test_ds = collect_and_save(ds['train'], num_samples=10000)
+    test_ds = collect_and_save(ds['train'], num_samples=100)
 
     from model import *
     from data import *
 
-    # Initialize your model and datasets
-    model = SpeechUnitModel()
+    # Initialize model and datasets
+    config = AutoConfig.from_pretrained("meta-llama/Meta-Llama-3-8B")
+    config.num_hidden_layers = 6
+    speech_model = SpeechUnitModel(config)
+    base_model = AutoModelForCausalLM.from_pretrained( 
+                model_name,  
+                device_map="cpu",
+                torch_dtype="float",
+                trust_remote_code=True,  
+                # attn_implementation="flash_attention_2"
+            )
+    first_three_layers = {}
+    for key, value in base_model.model.state_dict().items():
+        if key.startswith("embed") or key.startswith("layers.0.") or key.startswith("layers.1.") or key.startswith("layers.2.") or key.startswith("layers.3.") or key.startswith("layers.4.") or key.startswith("layers.5.") or key.startswith("norm"):
+            first_three_layers[key] = value
+    speech_model.ref_model.load_state_dict(first_three_layers, strict=False)  # 'strict=False' allows partial loading
+    speech_model = speech_model.to('cuda')
 
     train_dataset = MimiUnitDataset(test_ds, tokenizer)
 
     # val_dataset = MimiUnitDataset(...)
     trainer = SpeechUnitTrainer(
-        model=model,
+        model=speech_model,
         train_dataset=train_dataset,
         val_dataset=None,
         batch_size=32,
         num_epochs=300,
         lr=2e-4,
-        use_wandb=True,  # Set to False if you don't want to use Weights & Biases
+        use_wandb=False,  # Set to False if you don't want to use Weights & Biases
         project_name="speech_unit_training"
     )
     trainer.train()

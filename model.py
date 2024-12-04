@@ -50,7 +50,7 @@ class LlamaSubModel(nn.Module):
         if audio_ids is not None:
             # audio_ids shape: (batch_size, 8, seq_len)
             add_tensor = torch.zeros_like(audio_ids)
-            for i in range(1, audio_ids.shape[0]):
+            for i in range(1, 8):
                 add_tensor[i] = 2048 * (i)
             audio_ids = audio_ids + add_tensor
             audio_embedding = self.audio_embed(audio_ids)   # shape: (batch_size, 8, seq_len, 4096)
