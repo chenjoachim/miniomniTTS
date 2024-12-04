@@ -136,26 +136,37 @@ class SpeechUnitTrainer:
                 self.save_checkpoint(f"checkpoint_epoch_{epoch + 1}.pth")
     
     def training_step(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
-        """Perform a single training step"""
+        """Perform a single training step with Teacher Forcing."""
         # Move batch to device
         input_ids = batch['input_ids'].to(self.device)
-        attention_mask = batch['attention_mask'].to(self.device)
+        # attention_mask = batch['attention_mask'].to(self.device)
         labels = batch['labels'].to(self.device)
-        
-        # Forward pass
-        outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
-        
-        # Calculate loss
-        # Reshape outputs and labels for loss calculation
-        # outputs shape: (batch_size, num_heads, seq_len, codebook_size)
-        # labels shape: (batch_size, num_heads, seq_len)
-        batch_size, num_heads, seq_len, codebook_size = outputs.shape
-        outputs = outputs.view(-1, codebook_size)  # Flatten for CrossEntropyLoss
-        labels = labels.view(-1)  # Flatten labels
-        
-        loss = self.criterion(outputs, labels)
-        
+
+        # Prepare for Teacher Forcing
+        batch_size, seq_len = input_ids.shape
+        loss = 0.0  # Accumulate loss over the sequence
+
+        for t in range(seq_len):
+            # Take the token at position `t` for all batches
+            current_input_ids = input_ids[:, :t]  # Shape: (batch_size, seq_len)
+            current_audio_ids = labels[:, :, :t]
+            # current_attention_mask = attention_mask[:, t].unsqueeze(1)  # Shape: (batch_size, 1)
+            
+            # Forward pass for the current token
+            logits = self.model(input_ids=current_input_ids, audio_ids=current_audio_ids, hidden_state=hidden_state)
+            # Shape: (batch_size, 8, codebook_size)
+            
+            # Calculate loss for the current token
+            logits = logits.view(-1, 2050)
+            current_labels = labels[:, :, t].view(-1)  # Shape: (batch_size,)
+            loss += self.criterion(logits, current_labels)
+            
+
+        # Average loss over sequence length
+        loss = loss / seq_len
+
         return loss
+
     
     def validate(self) -> float:
         """Perform validation and return validation loss"""
