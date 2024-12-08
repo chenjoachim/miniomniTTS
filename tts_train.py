@@ -9,6 +9,7 @@ from torch.nn import CrossEntropyLoss
 from tqdm.auto import tqdm
 from typing import Optional, Dict, Any
 
+import deepspeed
 from model import *
 from data import *
 
@@ -28,6 +29,7 @@ class SpeechUnitTrainer:
         use_wandb: bool = False,
         project_name: str = "speech_unit_training",
         checkpoint_dir: Optional[str] = None,
+        ds_engine: Optional[str] = None,
         **optimizer_kwargs
     ):
         self.model = model.to(device)
@@ -38,6 +40,7 @@ class SpeechUnitTrainer:
         self.max_grad_norm = max_grad_norm
         self.use_wandb = use_wandb
         self.checkpoint_dir = checkpoint_dir
+        self.engine = ds_engine
         
         # Initialize dataloaders
         self.train_dataloader = DataLoader(
@@ -57,11 +60,11 @@ class SpeechUnitTrainer:
             )
         
         # Initialize optimizer
-        self.optimizer = optimizer_cls(
-            self.model.parameters(),
-            lr=lr,
-            **optimizer_kwargs
-        )
+        # self.optimizer = optimizer_cls(
+        #     self.model.parameters(),
+        #     lr=lr,
+        #     **optimizer_kwargs
+        # )
         
         # Initialize loss function
         self.criterion = CrossEntropyLoss(ignore_index=0)
@@ -91,15 +94,17 @@ class SpeechUnitTrainer:
                 
                 # Gradient accumulation
                 loss = loss / self.gradient_accumulation_steps
-                loss.backward()
+                self.engine.backward(loss)
+                # loss.backward()
                 
                 if (step + 1) % self.gradient_accumulation_steps == 0:
                     # Clip gradients
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
                     
                     # Optimizer step
-                    self.optimizer.step()
-                    self.optimizer.zero_grad()
+                    # self.optimizer.step()
+                    # self.optimizer.zero_grad()
+                    self.engine.step()
                 
                 train_loss += loss.item() * self.gradient_accumulation_steps
                 train_steps += 1
@@ -231,7 +236,7 @@ if __name__ == "__main__":
         # Convert to a Hugging Face Dataset
         hf_dataset = Dataset.from_list(collected_samples)
         return hf_dataset
-    test_ds = collect_and_save(ds['train'], num_samples=100)
+    test_ds = collect_and_save(ds['train'], num_samples=64)
 
     from model import *
     from data import *
@@ -240,30 +245,37 @@ if __name__ == "__main__":
     config = AutoConfig.from_pretrained("meta-llama/Meta-Llama-3-8B")
     config.num_hidden_layers = 6
     speech_model = SpeechUnitModel(config)
-    base_model = AutoModelForCausalLM.from_pretrained( 
-                model_name,  
-                device_map="cpu",
-                torch_dtype="float",
-                trust_remote_code=True,  
-                # attn_implementation="flash_attention_2"
-            )
-    first_three_layers = {}
-    for key, value in base_model.model.state_dict().items():
-        if key.startswith("embed") or key.startswith("layers.0.") or key.startswith("layers.1.") or key.startswith("layers.2.") or key.startswith("layers.3.") or key.startswith("layers.4.") or key.startswith("layers.5.") or key.startswith("norm"):
-            first_three_layers[key] = value
-    speech_model.ref_model.load_state_dict(first_three_layers, strict=False)  # 'strict=False' allows partial loading
+    # base_model = AutoModelForCausalLM.from_pretrained( 
+    #             model_name,  
+    #             device_map="cpu",
+    #             torch_dtype="float",
+    #             trust_remote_code=True,  
+    #             # attn_implementation="flash_attention_2"
+    #         )
+    # first_three_layers = {}
+    # for key, value in base_model.model.state_dict().items():
+    #     if key.startswith("embed") or key.startswith("layers.0.") or key.startswith("layers.1.") or key.startswith("layers.2.") or key.startswith("layers.3.") or key.startswith("layers.4.") or key.startswith("layers.5.") or key.startswith("norm"):
+    #         first_three_layers[key] = value
+    # speech_model.ref_model.load_state_dict(first_three_layers, strict=False)  # 'strict=False' allows partial loading
     speech_model = speech_model.to('cuda')
 
     train_dataset = MimiUnitDataset(test_ds, tokenizer)
+    ds_config = "ds_config.json"
+    engine, optimizer, _, _ = deepspeed.initialize(
+        model=speech_model,
+        model_parameters=speech_model.parameters(),
+        config=ds_config
+    )
 
     # val_dataset = MimiUnitDataset(...)
     trainer = SpeechUnitTrainer(
         model=speech_model,
         train_dataset=train_dataset,
         val_dataset=None,
-        batch_size=32,
+        batch_size=2,
         num_epochs=300,
         lr=2e-4,
+        engine=engine,
         use_wandb=False,  # Set to False if you don't want to use Weights & Biases
         project_name="speech_unit_training"
     )

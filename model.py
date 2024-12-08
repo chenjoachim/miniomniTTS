@@ -51,7 +51,7 @@ class LlamaSubModel(nn.Module):
             # audio_ids shape: (batch_size, 8, seq_len)
             add_tensor = torch.zeros_like(audio_ids)
             for i in range(1, 8):
-                add_tensor[i] = 2048 * (i)
+                add_tensor[:, i] = 2048 * (i)
             audio_ids = audio_ids + add_tensor
             audio_embedding = self.audio_embed(audio_ids)   # shape: (batch_size, 8, seq_len, 4096)
             weight_audio = torch.sum(audio_embedding * self.token_weights.view(1, -1, 1, 1), dim=1)
