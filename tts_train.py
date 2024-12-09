@@ -257,7 +257,7 @@ if __name__ == "__main__":
     #     if key.startswith("embed") or key.startswith("layers.0.") or key.startswith("layers.1.") or key.startswith("layers.2.") or key.startswith("layers.3.") or key.startswith("layers.4.") or key.startswith("layers.5.") or key.startswith("norm"):
     #         first_three_layers[key] = value
     # speech_model.ref_model.load_state_dict(first_three_layers, strict=False)  # 'strict=False' allows partial loading
-    speech_model = speech_model.to('cuda')
+    # speech_model = speech_model.to('cuda')
 
     train_dataset = MimiUnitDataset(test_ds, tokenizer)
     ds_config = "ds_config.json"

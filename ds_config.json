@@ -13,10 +13,14 @@
       },
       "overlap_comm": true
     },
+    "gradient_checkpointing":{
+      "enabled": true
+    },
     "pipeline": {
       "enabled": true,
       "micro_batches": 4,
       "partitioned_param_optimizer": true
-    }
+    },
+    "mp_size": 8
   }
   
