@@ -1,5 +1,5 @@
 {
-    "train_batch_size": 16,
+    "train_batch_size": 1,
     "fp16": {
       "enabled": false
     },
@@ -21,6 +21,6 @@
       "micro_batches": 4,
       "partitioned_param_optimizer": true
     },
-    "mp_size": 8
+    "mp_size": 2
   }
   

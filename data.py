@@ -22,29 +22,30 @@ class MimiUnitDataset(Dataset):
     def __getitem__(self, idx):
         # Extract 'text' and 'unit' from the dataset
         item = self.dataset[idx]
-        text = item['text']
-        unit = item['unit']
 
-        # Tokenize the text
-        tokenized = self.tokenizer(
-            text,
-            padding='max_length',
-            truncation=True,
-            max_length=self.max_length,
+        # Process the text into Llama3 index
+        data_input = [{'role': 'assistant', "content": item['text']}]
+
+        # Process the audio unit from list to tensor, and add index to each dimension
+        labels = torch.tensor(item['unit'], dtype=torch.long)
+        add_tensor = torch.zeros_like(labels)
+        for i in range(1, 8):
+            add_tensor[i, :] = 2050 * (i)
+        labels = labels + add_tensor
+        
+        input_ids = self.tokenizer.apply_chat_template(
+            data_input,
+            add_generation_prompt=False,
             return_tensors="pt"
         )
-
-        # Extract input_ids and attention_mask
-        input_ids = tokenized['input_ids'].squeeze(0)  # Remove batch dimension
-        attention_mask = tokenized['attention_mask'].squeeze(0)  # Remove batch dimension
-
-        # Convert 'unit' to tensor
-        label = torch.tensor(unit, dtype=torch.long)
+        # Cut llama generate template index
+        input_ids = input_ids[:, 5:]
+        padding = torch.full((1, labels.shape[1] - input_ids.shape[1]+1), self.tokenizer.eos_token_id, dtype=torch.long)
+        input_ids = torch.cat([input_ids, padding], dim=1)
 
         return {
             'input_ids': input_ids,
-            'attention_mask': attention_mask,
-            'labels': label
+            'labels': labels
         }
     
 def mimi_collate_fn(batch):
@@ -58,21 +59,29 @@ def mimi_collate_fn(batch):
         dict: Dictionary containing padded input_ids, attention_mask, and labels.
     """
     # Extract input_ids, attention_mask, and labels
-    input_ids = [item['input_ids'] for item in batch]
-    attention_mask = [item['attention_mask'] for item in batch]
+    input_ids = [torch.tensor(item['input_ids']) for item in batch]
+    attention_mask = [torch.tensor(item['attention_mask']) for item in batch]
     labels = [item['labels'] for item in batch]
 
-    # Pad input_ids and attention_mask
+    # Determine the maximum length in the current batch
+    max_length = max(seq.size(0) for seq in input_ids)
+
+    # Pad input_ids and attention_mask to the maximum length in the batch
     padded_input_ids = pad_sequence(input_ids, batch_first=True, padding_value=0)
     padded_attention_mask = pad_sequence(attention_mask, batch_first=True, padding_value=0)
 
+    # Ensure input_ids and attention_mask are trimmed to the batch max length
+    padded_input_ids = padded_input_ids[:, :max_length]
+    padded_attention_mask = padded_attention_mask[:, :max_length]
+
     # Pad labels (variable-length tensors)
     max_channels = max(label.size(0) for label in labels)
-    max_length = 512
+    max_label_length = max(label.size(1) for label in labels)
 
-    padded_labels = torch.zeros(len(labels), max_channels, max_length)  # Initialize with zeros
+    padded_labels = torch.zeros(len(labels), max_channels, max_label_length)  # Initialize with zeros
     for i, label in enumerate(labels):
         padded_labels[i, :label.size(0), :label.size(1)] = label  # Copy the actual label values
+
     padded_labels = padded_labels.type(torch.LongTensor)
 
     return {
