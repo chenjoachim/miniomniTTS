@@ -2,6 +2,7 @@ import torch
 from torch.utils.data import Dataset
 from transformers import AutoTokenizer
 from torch.nn.utils.rnn import pad_sequence
+from tqdm import tqdm
 
 class MimiUnitDataset(Dataset):
     def __init__(self, hf_dataset, tokenizer, max_length=512):
@@ -11,7 +12,7 @@ class MimiUnitDataset(Dataset):
             tokenizer: Tokenizer instance (e.g., LLaMA3 tokenizer).
             max_length (int): Maximum tokenized sequence length.
         """
-        self.dataset = list(hf_dataset)  # Convert iterable dataset to a list for indexing
+        self.dataset = hf_dataset  # Convert iterable dataset to a list for indexing
         self.tokenizer = tokenizer
         tokenizer.pad_token = tokenizer.eos_token
         self.max_length = max_length
@@ -28,11 +29,6 @@ class MimiUnitDataset(Dataset):
 
         # Process the audio unit from list to tensor, and add index to each dimension
         labels = torch.tensor(item['unit'], dtype=torch.long)
-        add_tensor = torch.zeros_like(labels)
-        for i in range(1, 8):
-            add_tensor[i, :] = 2050 * (i)
-        labels = labels + add_tensor
-        
         input_ids = self.tokenizer.apply_chat_template(
             data_input,
             add_generation_prompt=False,
@@ -40,9 +36,21 @@ class MimiUnitDataset(Dataset):
         )
         # Cut llama generate template index
         input_ids = input_ids[:, 5:]
-        padding = torch.full((1, labels.shape[1] - input_ids.shape[1]+1), self.tokenizer.eos_token_id, dtype=torch.long)
-        input_ids = torch.cat([input_ids, padding], dim=1)
+        if labels.shape[1] > input_ids.shape[1]+1:
+            padding = torch.full((1, labels.shape[1] - input_ids.shape[1]+1), self.tokenizer.eos_token_id, dtype=torch.long)
+            input_ids = torch.cat([input_ids, padding], dim=1)
+        else:
+            if idx + 1 < len(self):
+                return self.__getitem__(idx + 1)
+            else:
+                # data have been processed
+                pass
 
+        add_tensor = torch.zeros_like(labels)
+        for i in range(1, 8):
+            add_tensor[i, :] = 2050 * (i)
+        labels = labels + add_tensor
+        
         return {
             'input_ids': input_ids,
             'labels': labels
@@ -89,6 +97,34 @@ def mimi_collate_fn(batch):
         'attention_mask': padded_attention_mask,
         'labels': padded_labels
     }
+
+def filter_dataset(hf_dataset, tokenizer):
+    """
+    返回一個 filter 函數，用於過濾資料集
+    """
+    def is_valid_item(item):
+        try:
+            data_input = [{'role': 'assistant', "content": item['text']}]
+            labels = torch.tensor(item['unit'], dtype=torch.long)
+            
+            input_ids = tokenizer.apply_chat_template(
+                data_input,
+                add_generation_prompt=False,
+                return_tensors="pt"
+            )
+            input_ids = input_ids[:, 5:]
+            
+            return labels.shape[1] > input_ids.shape[1] + 1
+            
+        except Exception:
+            return False
+    
+    # 使用 Dataset.filter 而不是存儲在記憶體中
+    filtered_dataset = hf_dataset.filter(is_valid_item, num_proc=4)
+    
+    print(f"Original dataset size: {len(hf_dataset)}")
+    print(f"Filtered dataset size: {len(filtered_dataset)}")
+    print(f"Removed {len(hf_dataset) - len(filtered_dataset)} items")
 
 if __name__ == "__main__":
     # Initialize the dataset

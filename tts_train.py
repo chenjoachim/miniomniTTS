@@ -11,6 +11,7 @@ from typing import Optional, Dict, Any
 
 import peft
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+from datasets import Dataset, load_dataset, load_from_disk, concatenate_datasets
 from transformers import AutoConfig
 
 from model import *
@@ -92,15 +93,34 @@ class SpeechUnitTrainer:
                 self.optimizer.zero_grad()
                 loss = self._compute_batch_loss(input_ids, labels)
                 loss.backward()
+                
+                # Calculate gradient norm before clipping
+                grad_norm = self._get_grad_norm()
+                
+                # Clip gradients
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
+                
+                # Calculate gradient norm after clipping
+                clipped_grad_norm = self._get_grad_norm()
+                
                 self.optimizer.step()
 
                 train_loss += loss.item()
                 train_steps += 1
-                progress_bar.set_postfix({'train_loss': train_loss / train_steps})
+                progress_bar.set_postfix({
+                    'train_loss': train_loss / train_steps,
+                    'grad_norm': grad_norm,
+                    'clipped_grad_norm': clipped_grad_norm
+                })
 
                 if self.use_wandb:
-                    wandb.log({'train_loss': loss.item(), 'epoch': epoch})
+                    wandb.log({
+                        'train_loss': loss.item(),
+                        'epoch': epoch,
+                        'grad_norm': grad_norm,
+                        'clipped_grad_norm': clipped_grad_norm,
+                        'grad_norm_ratio': clipped_grad_norm / grad_norm if grad_norm > 0 else 0
+                    })
 
             avg_train_loss = train_loss / train_steps
 
@@ -116,8 +136,16 @@ class SpeechUnitTrainer:
             if self.checkpoint_dir and epoch % 3 == 0:
                 self.save_checkpoint(f"checkpoint_epoch_{epoch + 1}.pth")
 
+    def _get_grad_norm(self) -> float:
+        """Calculate the gradient norm for all parameters that require gradients."""
+        total_norm = 0.0
+        for p in self.model.parameters():
+            if p.requires_grad and p.grad is not None:
+                param_norm = p.grad.detach().data.norm(2)
+                total_norm += param_norm.item() ** 2
+        return total_norm ** 0.5
+
     def _compute_batch_loss(self, input_ids, labels):
-        # TODO: append begin-of-audio (2048) and end-of-audio (2049) index
         bos_labels = torch.full((8, 1), 2048).to(self.device)
         eos_labels = torch.full((8, 1), 2049).to(self.device)
         generate_audio_ids = torch.cat([bos_labels, labels], dim=-1)
@@ -158,7 +186,6 @@ class SpeechUnitTrainer:
         if len(checkpoint_files) > max_checkpoints:
             os.remove(checkpoint_files[0])
 
-
 def main():
     from datasets import Dataset, load_dataset
     from itertools import islice
@@ -166,13 +193,20 @@ def main():
 
     model_name = "meta-llama/Meta-Llama-3-8B-Instruct"
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    ds = load_dataset("anthony-wss/Soundon-tts", streaming="True")
+    # ds = load_dataset("anthony-wss/Soundon-tts", streaming="True")
 
-    def collect_and_save(iterable_dataset, num_samples=256):
-        collected_samples = list(islice(iterable_dataset, num_samples))
-        return Dataset.from_list(collected_samples)
+    # def collect_and_save(iterable_dataset, num_samples=256):
+    #     collected_samples = list(islice(iterable_dataset, num_samples))
+    #     return Dataset.from_list(collected_samples)
+    # ds1 = load_from_disk('../Soundon-TTS-preprocessing/_machine_nonoverlap_0_100_mimi_final')
+    # ds2 = load_from_disk('../Soundon-TTS-preprocessing/dialogue_chinese_llama31_70B_user_long_mimi_final')
+    # ds3 = load_from_disk('../Soundon-TTS-preprocessing/TW_Attraction_mimi_dataset')
+    # test_ds = concatenate_datasets([ds1, ds2, ds3])
+    # print(test_ds)
+    test_ds = load_from_disk('./mimiTTS_dataset')
 
-    test_ds = collect_and_save(ds['train'], num_samples=10000)
+
+    # test_ds = collect_and_save(ds['train'], num_samples=10000)
     base_model = AutoModelForCausalLM.from_pretrained( 
                 model_name,
                 device_map="cpu",
@@ -197,6 +231,7 @@ def main():
         val_dataset=None,
         batch_size=1,
         num_epochs=100,
+        max_grad_norm=10.0,
         lr=1e-4,
         use_wandb=True,
         project_name="speech_unit_training",

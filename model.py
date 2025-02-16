@@ -17,7 +17,7 @@ class SpeechUnitModel(nn.Module):
         self.embed_tokens = base_model.model.embed_tokens
         original_vocab_size, embed_dim = self.embed_tokens.weight.shape
 
-        # (2048 + 2 (EOS + PAD) )codebook * 8 head , 16384 as begin-of-audio, 16385 as end-of-audio
+        # (2048 + 2 (EOS + BOS) )codebook * 8 head , 2048 as begin-of-audio, 2049 as end-of-audio
         self.audio_embed = nn.Embedding(16400, embed_dim)
         nn.init.xavier_uniform_(self.audio_embed.weight.data)
 
@@ -74,6 +74,53 @@ class SpeechUnitModel(nn.Module):
 
     def _extend_attention_mask(self, attention_mask, device):
         return (1.0 - attention_mask[:, None, None, :]) * -10000.0
+    
+    def inference(self, input_text, mimi_vocoder, max_length=150):
+        # process input_text into index
+        data_input = [{'role': 'assistant', "content": input_text}]
+        model_id = "meta-llama/Meta-Llama-3-8B-Instruct"
+        tokenizer = AutoTokenizer.from_pretrained(model_id)
+        input_ids = tokenizer.apply_chat_template(
+                data_input,
+                add_generation_prompt=False,
+                return_tensors="pt"
+            )
+        # delete template index
+        input_ids = input_ids[:, 5:]
+        _, seq_length = input_ids.shape
+        input_ids = input_ids.to('cuda')
+        
+        audio_ids = torch.full((8, 1), 2048).to('cuda')
+        add_tensor = torch.zeros_like(audio_ids).to('cuda')
+        for i in range(1, 8):
+            add_tensor[i, :] = 2050 * (i)
+        with torch.no_grad():
+            for i in range(1, max_length):
+                if i > seq_length:
+                    padding = torch.full((1,1), tokenizer.eos_token_id, dtype=torch.long).to('cuda')
+                    input_ids = torch.cat([input_ids, padding], dim=1)
+                outputs = self(input_ids=input_ids[:, :i], audio_ids=audio_ids)
+                # Avoid other layer decode eos
+                outputs[:,1:,:,2049] = float('-inf')
+                current_audio_ids = outputs.squeeze()[:,-1].argmax(-1).unsqueeze(-1)
+                # Stop when output is eos (2049)
+                if current_audio_ids[0] == 2049:
+                    break
+                current_audio_ids = current_audio_ids+add_tensor
+                audio_ids = torch.cat([audio_ids, current_audio_ids], dim=-1)
+
+        # delete bos token (first timestep)
+        audio_ids = audio_ids[:, 1:]
+        # process unit to original mimi codec
+        add_tensor = torch.zeros_like(audio_ids)
+        for i in range(1, 8):
+            add_tensor[i, :] = 2050 * (i)
+        audio_ids = audio_ids - add_tensor
+        audio_ids = audio_ids.unsqueeze(0)
+        with torch.no_grad():
+            # input dimension: (bs_size, 8, seq_len)
+            audio_values = mimi_vocoder.decode(audio_ids)[0]
+        return audio_values
 
 
 
