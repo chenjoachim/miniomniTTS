@@ -7,24 +7,27 @@ from transformers.models.llama.modeling_llama import LlamaModel, LlamaRotaryEmbe
 
 # Extract only the first three layers from Llama3's base model
 class SpeechUnitModel(nn.Module):
-    def __init__(self, base_model, num_layers=3, output_dim=2050, num_heads=8):
+    def __init__(self, base_model, llama_layers=3, output_dim=2050, num_heads=8):
         super(SpeechUnitModel, self).__init__()
         
         # Configuration and base model initialization
         config = LlamaConfig()
-        config.num_hidden_layers = num_layers
+        config.num_hidden_layers = llama_layers
         # Embedding layers
         self.embed_tokens = base_model.model.embed_tokens
         original_vocab_size, embed_dim = self.embed_tokens.weight.shape
+        self.num_heads = num_heads
+        self.output_dim = output_dim
 
         # (2048 + 2 (EOS + BOS) )codebook * 8 head , 2048 as begin-of-audio, 2049 as end-of-audio
-        self.audio_embed = nn.Embedding(16400, embed_dim)
+        self.codebook_size = output_dim * num_heads
+        self.audio_embed = nn.Embedding(self.codebook_size, embed_dim)
         nn.init.xavier_uniform_(self.audio_embed.weight.data)
 
-        self.token_weights = nn.Parameter(torch.ones(8))
+        self.token_weights = nn.Parameter(torch.ones(num_heads))
 
         # Transformer layers
-        self.layers = torch.nn.ModuleList(base_model.model.layers[:num_layers])
+        self.layers = torch.nn.ModuleList(base_model.model.layers[:llama_layers])
         for i in range(len(self.layers)):
             self.layers[i].self_attn.is_causal = True
 
@@ -47,8 +50,8 @@ class SpeechUnitModel(nn.Module):
         hidden_states = self.embed_tokens(input_ids)
 
         if audio_ids is not None:
-            # audio_ids shape: (8, seq_len)
-            audio_embedding = self.audio_embed(audio_ids)   # shape: (8, seq_len, embed_dim)
+            # audio_ids shape: (num_heads, seq_len)
+            audio_embedding = self.audio_embed(audio_ids)   # shape: (num_heads, seq_len, embed_dim)
             weight_audio = torch.sum(audio_embedding * self.token_weights.view(1, -1, 1, 1), dim=1)
 
             hidden_states = hidden_states + weight_audio
@@ -90,10 +93,10 @@ class SpeechUnitModel(nn.Module):
         _, seq_length = input_ids.shape
         input_ids = input_ids.to('cuda')
         
-        audio_ids = torch.full((8, 1), 2048).to('cuda')
+        audio_ids = torch.full((self.num_heads, 1), (self.output_dim - 2)).to('cuda')
         add_tensor = torch.zeros_like(audio_ids).to('cuda')
-        for i in range(1, 8):
-            add_tensor[i, :] = 2050 * (i)
+        for i in range(1, self.num_heads):
+            add_tensor[i, :] = self.output_dim * (i)
         with torch.no_grad():
             for i in range(1, max_length):
                 if i > seq_length:
@@ -101,10 +104,10 @@ class SpeechUnitModel(nn.Module):
                     input_ids = torch.cat([input_ids, padding], dim=1)
                 outputs = self(input_ids=input_ids[:, :i], audio_ids=audio_ids)
                 # Avoid other layer decode eos
-                outputs[:,1:,:,2049] = float('-inf')
+                outputs[:,1:,:,self.num_heads - 1] = float('-inf')
                 current_audio_ids = outputs.squeeze()[:,-1].argmax(-1).unsqueeze(-1)
                 # Stop when output is eos (2049)
-                if current_audio_ids[0] == 2049:
+                if current_audio_ids[0] == self.num_heads - 1:
                     break
                 current_audio_ids = current_audio_ids+add_tensor
                 audio_ids = torch.cat([audio_ids, current_audio_ids], dim=-1)
@@ -113,8 +116,8 @@ class SpeechUnitModel(nn.Module):
         audio_ids = audio_ids[:, 1:]
         # process unit to original mimi codec
         add_tensor = torch.zeros_like(audio_ids)
-        for i in range(1, 8):
-            add_tensor[i, :] = 2050 * (i)
+        for i in range(1, self.num_heads):
+            add_tensor[i, :] = self.output_dim * (i)
         audio_ids = audio_ids - add_tensor
         audio_ids = audio_ids.unsqueeze(0)
         with torch.no_grad():
