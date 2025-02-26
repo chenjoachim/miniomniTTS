@@ -180,7 +180,7 @@ if __name__ == "__main__":
 
     model_name = "meta-llama/Meta-Llama-3-8B"
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    ds = load_dataset("anthony-wss/Soundon-tts", streaming="True")
+    ds = load_dataset("Allen172/GLM-4_codec_dataset", streaming=True)
     
     # Configure parameters
     num_layers = 1  # Number of layers

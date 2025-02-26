@@ -4,3 +4,4 @@ wandb/
 *.ipynb
 checkpoints*
 *.wav
+.env
