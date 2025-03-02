@@ -34,6 +34,8 @@ class SpeechUnitTrainer:
         use_wandb: bool = False,
         project_name: str = "speech_unit_training",
         checkpoint_dir: Optional[str] = None,
+        codebook_size: int = 2048, # NOT Including BOS and EOS tokens
+        vocoder_layer: int = 8,
         **optimizer_kwargs
     ):
         if lora_config is not None:
@@ -64,6 +66,8 @@ class SpeechUnitTrainer:
         self.max_grad_norm = max_grad_norm
         self.use_wandb = use_wandb
         self.checkpoint_dir = checkpoint_dir
+        self.codebook_size = codebook_size
+        self.vocoder_layer = vocoder_layer
         self.train_dataloader = train_dataset
         self.val_dataloader = None
         if val_dataset:
@@ -146,15 +150,15 @@ class SpeechUnitTrainer:
         return total_norm ** 0.5
 
     def _compute_batch_loss(self, input_ids, labels):
-        bos_labels = torch.full((8, 1), 2048).to(self.device)
-        eos_labels = torch.full((8, 1), 2049).to(self.device)
+        bos_labels = torch.full((self.vocoder_layer, 1), self.codebook_size).to(self.device)
+        eos_labels = torch.full((self.vocoder_layer, 1), self.codebook_size+1).to(self.device)
         generate_audio_ids = torch.cat([bos_labels, labels], dim=-1)
         logits = self.model(input_ids=input_ids, audio_ids=generate_audio_ids)
-        logits = logits.view(-1, 2050)
+        logits = logits.view(-1, self.codebook_size+2)
         
         add_tensor = torch.zeros_like(labels)
-        for i in range(1, 8):
-            add_tensor[i, :] = 2050 * (i)
+        for i in range(1, self.vocoder_layer):
+            add_tensor[i, :] = self.codebook_size * (i)
         labels = labels - add_tensor
         labels = torch.cat([labels, eos_labels], dim=-1)
         return self.criterion(logits, labels.view(-1))
@@ -227,6 +231,7 @@ def main():
 
     trainer = SpeechUnitTrainer(
         model=speech_model,
+        lora_config=lora_config,
         train_dataset=train_dataset,
         val_dataset=None,
         batch_size=1,
@@ -235,7 +240,9 @@ def main():
         lr=1e-4,
         use_wandb=True,
         project_name="speech_unit_training",
-        checkpoint_dir="checkpoints"
+        checkpoint_dir="checkpoints",
+        codebook_size=16384,
+        vocoder_layer=1,
     )
     trainer.train()
 
