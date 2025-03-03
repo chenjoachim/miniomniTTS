@@ -9,10 +9,12 @@ from torch.nn import CrossEntropyLoss
 from tqdm.auto import tqdm
 from typing import Optional, Dict, Any
 
-import peft
-from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+# import peft
+# from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from datasets import Dataset, load_dataset, load_from_disk, concatenate_datasets
 from transformers import AutoConfig
+
+import argparse
 
 from model import *
 from data import *
@@ -38,25 +40,6 @@ class SpeechUnitTrainer:
         vocoder_layer: int = 8,
         **optimizer_kwargs
     ):
-        if lora_config is not None:
-            lora_config = {
-                "r": 16,
-                "lora_alpha": 32,
-                "lora_dropout": 0.1,
-                "bias": "none",
-                "target_modules": ["q_proj", "v_proj"],
-            }
-            model = prepare_model_for_kbit_training(model)
-            peft_config = LoraConfig(
-                r=lora_config.get("r", 16),
-                lora_alpha=lora_config.get("lora_alpha", 32),
-                lora_dropout=lora_config.get("lora_dropout", 0.1),
-                bias=lora_config.get("bias", "none"),
-                target_modules=lora_config.get("target_modules", ["q_proj", "v_proj"]),
-                task_type="CAUSAL_LM"
-            )
-            model = get_peft_model(model, peft_config)
-            model.print_trainable_parameters()
 
         self.model = model
         self.device = device
@@ -68,7 +51,9 @@ class SpeechUnitTrainer:
         self.checkpoint_dir = checkpoint_dir
         self.codebook_size = codebook_size
         self.vocoder_layer = vocoder_layer
-        self.train_dataloader = train_dataset
+        self.train_dataloader = DataLoader(
+            train_dataset, batch_size=batch_size, shuffle=True, collate_fn=mimi_collate_fn, pin_memory=True
+        )
         self.val_dataloader = None
         if val_dataset:
             self.val_dataloader = DataLoader(
@@ -120,6 +105,7 @@ class SpeechUnitTrainer:
                 if self.use_wandb:
                     wandb.log({
                         'train_loss': loss.item(),
+                        'lr': self.optimizer.param_groups[0]['lr'],
                         'epoch': epoch,
                         'grad_norm': grad_norm,
                         'clipped_grad_norm': clipped_grad_norm,
@@ -150,15 +136,18 @@ class SpeechUnitTrainer:
         return total_norm ** 0.5
 
     def _compute_batch_loss(self, input_ids, labels):
-        bos_labels = torch.full((self.vocoder_layer, 1), self.codebook_size).to(self.device)
-        eos_labels = torch.full((self.vocoder_layer, 1), self.codebook_size+1).to(self.device)
+        batch_size = input_ids.size(0)
+        assert batch_size == labels.size(0), f"Input and labels must have the same batch size. Got input {batch_size} and label {labels.size(0)}"
+        bos_labels = torch.full((batch_size, self.vocoder_layer, 1), self.codebook_size).to(self.device)
+        eos_labels = torch.full((batch_size, self.vocoder_layer, 1), self.codebook_size+1).to(self.device)
         generate_audio_ids = torch.cat([bos_labels, labels], dim=-1)
         logits = self.model(input_ids=input_ids, audio_ids=generate_audio_ids)
         logits = logits.view(-1, self.codebook_size+2)
-        
+        # print("logits shape: ", logits.shape)
+        # print("labels shape: ", labels.shape)
         add_tensor = torch.zeros_like(labels)
         for i in range(1, self.vocoder_layer):
-            add_tensor[i, :] = self.codebook_size * (i)
+            add_tensor[:, i, :] = self.codebook_size * (i)
         labels = labels - add_tensor
         labels = torch.cat([labels, eos_labels], dim=-1)
         return self.criterion(logits, labels.view(-1))
@@ -221,19 +210,44 @@ def main():
     from itertools import islice
     from transformers import AutoTokenizer
     
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model_name", type=str, default="meta-llama/Llama-3.2-3B-Instruct")
+    parser.add_argument("--dataset_name", type=str, default="Allen172/GLM-4_codec_dataset")
+    parser.add_argument("--num_samples", type=int, default=64)
+    parser.add_argument("--num_epochs", type=int, default=100)
+    parser.add_argument("--batch_size", type=int, default=1)
+    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--checkpoint_dir", type=str, default="ckpts/checkpoints")
+    args = parser.parse_args()
+    
+    
     training_config = TrainingConfig(
-        model_name="meta-llama/Meta-Llama-3.2-3B-Instruct",
+        model_name=args.model_name
     )
     lora_config = training_config.lora_config
     vocoder_config = training_config.vocoder_config
     model_name = training_config.model_name
-    dataset_name = "Allen172/GLM-4_codec_dataset"
+    dataset_name = args.dataset_name
     
     print("\n[DEBUG] Finished loading training config.")
     print("\n[DEBUG] Loading dataset...")
     
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    test_ds = load_dataset(dataset_name, streaming="True")
+    ds = load_dataset(dataset_name, streaming=True)
+    
+    def collect_and_save(iterable_dataset, num_samples=64):
+        """
+        Collects a specified number of samples from an IterableDataset and saves them as a Hugging Face Dataset.
+        """
+        collected_samples = list(islice(iterable_dataset, num_samples))
+        hf_dataset = Dataset.from_list(collected_samples)
+        return hf_dataset
+    
+    test_ds = collect_and_save(ds['train'], num_samples=args.num_samples)
+    # 0.9 as training set, 0.1 as validation set
+    split_ds = test_ds.train_test_split(test_size=0.1)
+    train_ds = split_ds['train']
+    val_ds = split_ds['test']
 
     # def collect_and_save(iterable_dataset, num_samples=256):
     #     collected_samples = list(islice(iterable_dataset, num_samples))
@@ -269,26 +283,34 @@ def main():
     
     
     train_dataset = MimiUnitDataset(
-        test_ds, 
+        train_ds, 
         tokenizer, 
         num_layers=vocoder_config["vocoder_layer"], 
         codebook_size=vocoder_config["codebook_size"], 
         column_names=['label_text', 'label_codec']
     )
+    val_dataset = MimiUnitDataset(
+        val_ds, 
+        tokenizer, 
+        num_layers=vocoder_config["vocoder_layer"], 
+        codebook_size=vocoder_config["codebook_size"], 
+        column_names=['label_text', 'label_codec']
+    )
+    print("\n[DEBUG] Size of train_dataset: ", len(train_dataset))
     print("\n[DEBUG] Finished loading train_dataset.")
     print("\n[DEBUG] Initializing SpeechUnitTrainer...")
     trainer = SpeechUnitTrainer(
         model=speech_model,
         lora_config=lora_config,
         train_dataset=train_dataset,
-        val_dataset=None,
-        batch_size=1,
-        num_epochs=100,
+        val_dataset=val_dataset,
+        batch_size=args.batch_size,
+        num_epochs=args.num_epochs,
         max_grad_norm=10.0,
-        lr=1e-4,
+        lr=args.lr,
         use_wandb=True,
         project_name="speech_unit_training",
-        checkpoint_dir="checkpoints",
+        checkpoint_dir=args.checkpoint_dir,
         codebook_size=16384,
         vocoder_layer=1,
     )
