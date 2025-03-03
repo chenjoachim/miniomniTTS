@@ -66,7 +66,7 @@ class MimiUnitDataset(Dataset):
 
         add_tensor = torch.zeros_like(labels)
         for i in range(1, self.num_layers):
-            add_tensor[i, :] = (self.codebook_size) * (i)
+            add_tensor[i, :] = (self.codebook_size + 2) * (i)
         labels = labels + add_tensor
         
         attention_mask = torch.ones_like(input_ids)
@@ -184,7 +184,7 @@ if __name__ == "__main__":
     
     # Configure parameters
     num_layers = 1  # Number of layers
-    codebook_size = 16386  # Codebook size
+    codebook_size = 16384  # Codebook size
 
     def collect_and_save(iterable_dataset, num_samples=256):
         """

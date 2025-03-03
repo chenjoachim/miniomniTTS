@@ -189,15 +189,51 @@ class SpeechUnitTrainer:
         checkpoint_files = sorted(glob.glob(os.path.join(self.checkpoint_dir, "checkpoint_epoch_*.pth")))
         if len(checkpoint_files) > max_checkpoints:
             os.remove(checkpoint_files[0])
+            
+class TrainingConfig: 
+    # Set config
+    def __init__(self, **kwargs):
+        default_lora_config = {
+            "r": 32,
+            "lora_alpha": 64,
+            "lora_dropout": 0.1,
+            "target_modules": ["q_proj", "v_proj", "k_proj"]
+        }
+        default_vocoder_config = {
+            "codebook_size": 16384,
+            "vocoder_layer": 1
+        }
+        default_model_name = "meta-llama/Meta-Llama-3-8B-Instruct"
+        self.lora_config = default_lora_config
+        self.vocoder_config = default_vocoder_config
+        
+        # if 'lora_config' in kwargs, use it
+        if 'lora_config' in kwargs:
+            self.lora_config = kwargs['lora_config']
+        if 'vocoder_config' in kwargs:
+            self.vocoder_config = kwargs['vocoder_config']
+        if 'model_name' in kwargs:
+            self.model_name = kwargs['model_name']
+        
 
 def main():
     from datasets import Dataset, load_dataset
     from itertools import islice
     from transformers import AutoTokenizer
-
-    model_name = "meta-llama/Meta-Llama-3-8B-Instruct"
+    
+    training_config = TrainingConfig(
+        model_name="meta-llama/Meta-Llama-3.2-3B-Instruct",
+    )
+    lora_config = training_config.lora_config
+    vocoder_config = training_config.vocoder_config
+    model_name = training_config.model_name
+    dataset_name = "Allen172/GLM-4_codec_dataset"
+    
+    print("\n[DEBUG] Finished loading training config.")
+    print("\n[DEBUG] Loading dataset...")
+    
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    # ds = load_dataset("anthony-wss/Soundon-tts", streaming="True")
+    test_ds = load_dataset(dataset_name, streaming="True")
 
     # def collect_and_save(iterable_dataset, num_samples=256):
     #     collected_samples = list(islice(iterable_dataset, num_samples))
@@ -207,10 +243,12 @@ def main():
     # ds3 = load_from_disk('../Soundon-TTS-preprocessing/TW_Attraction_mimi_dataset')
     # test_ds = concatenate_datasets([ds1, ds2, ds3])
     # print(test_ds)
-    test_ds = load_from_disk('./mimiTTS_dataset')
+    # test_ds = load_from_disk('./mimiTTS_dataset')
 
 
     # test_ds = collect_and_save(ds['train'], num_samples=10000)
+    print("\n[DEBUG] Finished loading dataset.")
+    print("\n[DEBUG] Initializing model...")
     base_model = AutoModelForCausalLM.from_pretrained( 
                 model_name,
                 device_map="cpu",
@@ -218,17 +256,27 @@ def main():
                 trust_remote_code=True,  
                 # attn_implementation="flash_attention_2"
             )
-    speech_model = SpeechUnitModel(base_model).to('cuda')
-
-    lora_config = {
-        "r": 32,
-        "lora_alpha": 64,
-        "lora_dropout": 0.1,
-        "target_modules": ["q_proj", "v_proj", "k_proj"]
-    }
-
-    train_dataset = MimiUnitDataset(test_ds, tokenizer)
-
+    print("\n[DEBUG] Finished initializing model.")
+    print("\n[DEBUG] Initializing SpeechUnitModel...")
+    speech_model = SpeechUnitModel(
+        base_model,
+        llama_layers=3,
+        output_dim=vocoder_config["codebook_size"]+2, # Including BOS and EOS tokens
+        num_heads=vocoder_config["vocoder_layer"],
+        model_id=model_name,
+    ).to('cuda')
+    print("\n[DEBUG] Finished initializing SpeechUnitModel.")
+    
+    
+    train_dataset = MimiUnitDataset(
+        test_ds, 
+        tokenizer, 
+        num_layers=vocoder_config["vocoder_layer"], 
+        codebook_size=vocoder_config["codebook_size"], 
+        column_names=['label_text', 'label_codec']
+    )
+    print("\n[DEBUG] Finished loading train_dataset.")
+    print("\n[DEBUG] Initializing SpeechUnitTrainer...")
     trainer = SpeechUnitTrainer(
         model=speech_model,
         lora_config=lora_config,
@@ -244,7 +292,10 @@ def main():
         codebook_size=16384,
         vocoder_layer=1,
     )
+    print("\n[DEBUG] Finished initializing SpeechUnitTrainer.")
+    print("\n[DEBUG] All set! Training model...")
     trainer.train()
+    print("\n[DEBUG] Finished training model.")
 
 
 if __name__ == "__main__":
