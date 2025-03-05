@@ -82,7 +82,7 @@ class SpeechUnitModel(nn.Module):
     def _extend_attention_mask(self, attention_mask, device):
         return (1.0 - attention_mask[:, None, None, :]) * -10000.0
     
-    def inference(self, input_text, mimi_vocoder, max_length=150):
+    def inference(self, input_text, vocoder, max_length=150):
         # process input_text into index
         data_input = [{'role': 'assistant', "content": input_text}]
         model_id = self.model_id
@@ -126,7 +126,7 @@ class SpeechUnitModel(nn.Module):
         audio_ids = audio_ids.unsqueeze(0)
         with torch.no_grad():
             # input dimension: (bs_size, 8, seq_len)
-            audio_values = mimi_vocoder.decode(audio_ids)[0]
+            audio_values = vocoder.decode(audio_ids)[0]
         return audio_values
 
 
@@ -211,7 +211,7 @@ def main():
         with torch.inference_mode():
             audio_values = speech_model.inference(
                 input_text=args.text,
-                mimi_vocoder=vocoder,
+                vocoder=vocoder,
                 max_length=args.max_length
             )
         

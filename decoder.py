@@ -20,7 +20,7 @@ class GLMvocoder:
                                     hift_ckpt_path=hift_checkpoint,
                                     device=device)
         
-    def token_to_wav(self, tts_tokens):
+    def decode(self, tts_tokens):
         this_uuid = str(uuid.uuid4())
         prompt_speech_feat = torch.zeros(1, 0, 80).to(self.device)
         flow_prompt_speech_token = torch.zeros(1, 0, dtype=torch.int64).to(self.device)
