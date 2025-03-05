@@ -1,0 +1,3 @@
+[submodule "GLM-4-Voice"]
+	path = GLM-4-Voice
+	url = https://github.com/THUDM/GLM-4-Voice.git
