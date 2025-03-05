@@ -218,6 +218,7 @@ def main():
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--checkpoint_dir", type=str, default="ckpts/checkpoints")
+    parser.add_argument("--do_eval", action="store_true")
     args = parser.parse_args()
     
     
@@ -244,10 +245,14 @@ def main():
         return hf_dataset
     
     test_ds = collect_and_save(ds['train'], num_samples=args.num_samples)
-    # 0.9 as training set, 0.1 as validation set
-    split_ds = test_ds.train_test_split(test_size=0.1)
-    train_ds = split_ds['train']
-    val_ds = split_ds['test']
+    if args.do_eval:
+        # 0.9 as training set, 0.1 as validation set
+        split_ds = test_ds.train_test_split(test_size=0.1)
+        train_ds = split_ds['train']
+        val_ds = split_ds['test']
+    else:
+        train_ds = test_ds
+        val_ds = None
 
     # def collect_and_save(iterable_dataset, num_samples=256):
     #     collected_samples = list(islice(iterable_dataset, num_samples))
@@ -289,13 +294,16 @@ def main():
         codebook_size=vocoder_config["codebook_size"], 
         column_names=['label_text', 'label_codec']
     )
-    val_dataset = MimiUnitDataset(
-        val_ds, 
-        tokenizer, 
-        num_layers=vocoder_config["vocoder_layer"], 
-        codebook_size=vocoder_config["codebook_size"], 
-        column_names=['label_text', 'label_codec']
-    )
+    if val_ds:
+        val_dataset = MimiUnitDataset(
+            val_ds, 
+            tokenizer, 
+            num_layers=vocoder_config["vocoder_layer"], 
+            codebook_size=vocoder_config["codebook_size"], 
+            column_names=['label_text', 'label_codec']
+        )
+    else:
+        val_dataset = None
     print("\n[DEBUG] Size of train_dataset: ", len(train_dataset))
     print("\n[DEBUG] Finished loading train_dataset.")
     print("\n[DEBUG] Initializing SpeechUnitTrainer...")

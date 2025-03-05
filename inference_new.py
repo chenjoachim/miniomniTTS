@@ -30,6 +30,9 @@ def run_inference(args):
         model_id=args.model
     ).to(device)
     
+    checkpoint = torch.load(args.checkpoint, map_location=device)
+    speech_model.load_state_dict(checkpoint)
+    
     speech_model.eval()
     print(f"Model created with {sum(p.numel() for p in speech_model.parameters())/1e6:.2f}M parameters")
     
@@ -88,6 +91,8 @@ if __name__ == "__main__":
                         help="Maximum length for audio token generation")
     parser.add_argument("--use_mock", action="store_true", 
                         help="Use mock vocoder instead of GLMvocoder")
+    parser.add_argument("--checkpoint", type=str, required=True,
+                        help="Path to the model checkpoint file")
     
     args = parser.parse_args()
     run_inference(args)

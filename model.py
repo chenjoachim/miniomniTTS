@@ -92,11 +92,23 @@ class SpeechUnitModel(nn.Module):
                 add_generation_prompt=False,
                 return_tensors="pt"
             )
+        blank_input_ids = tokenizer.apply_chat_template(
+            [{'role': 'assistant', "content": ""}],
+            add_generation_prompt=False,
+            return_tensors="pt"
+        )
+        # Duplicate to a batch
+        print("[DEBUG] shape of input_ids:", input_ids.shape)
+        print("[DEBUG] shape of blank ids", blank_input_ids.shape)
+        print("[DEBUG] First 10 tokens:", input_ids[0, :10])
+        print("[DEBUG] First 10 tokens (blank):", blank_input_ids)
+        
         # delete template index
         input_ids = input_ids[:, 5:]
         _, seq_length = input_ids.shape
         input_ids = input_ids.to(next(self.parameters()).device)
         
+        print("[DEBUG] shape of input_ids after template index removal:", input_ids.shape)
         audio_ids = torch.full((self.num_heads, 1), (self.output_dim - 2), device=next(self.parameters()).device)
         add_tensor = torch.zeros_like(audio_ids)
         for i in range(1, self.num_heads):
@@ -106,16 +118,28 @@ class SpeechUnitModel(nn.Module):
                 if i > seq_length:
                     padding = torch.full((1,1), tokenizer.eos_token_id, dtype=torch.long, device=next(self.parameters()).device)
                     input_ids = torch.cat([input_ids, padding], dim=1)
+                print("[DEBUG] shape of ids passed to model:", input_ids[:, :i].shape)
+                print("[DEBUG] shape of audio_ids passed to model:", audio_ids.shape)
                 outputs = self(input_ids=input_ids[:, :i], audio_ids=audio_ids)
                 # Avoid other layer decode eos
-                outputs[:,1:,:,self.num_heads - 1] = float('-inf')
-                current_audio_ids = outputs.squeeze()[:,-1].argmax(-1).unsqueeze(-1)
+                print("[DEBUG] shape of outputs:", outputs.shape)
+                if self.output_dim > 1:
+                    outputs[:,1:,:,self.num_heads - 1] = float('-inf')
+                print("[DEBUG] shape of outputs after masking:", outputs.shape)
+                # Print future shape
+                print("[DEBUG] shape of squeeze:", outputs.squeeze(0).shape)
+                print("[DEBUG] shape of squeeze:", outputs.squeeze(0)[:,-1].shape)
+                print("[DEBUG] shape of squeeze:", outputs.squeeze(0)[:,-1].argmax(-1).shape)
+                print("[DEBUG] shape of squeeze:", outputs.squeeze(0)[:,-1].argmax(-1).unsqueeze(-1).shape)
+                current_audio_ids = outputs.squeeze(0)[:,-1].argmax(-1).unsqueeze(-1)
+                print("[DEBUG] shape of current_audio_ids:", current_audio_ids.shape)
                 # Stop when output is eos (2049)
+                print("[DEBUG] current_audio_ids:", current_audio_ids)
                 if current_audio_ids[0] == self.num_heads - 1:
                     break
                 current_audio_ids = current_audio_ids+add_tensor
                 audio_ids = torch.cat([audio_ids, current_audio_ids], dim=-1)
-
+        print("[DEBUG] Final shape of audio_ids:", audio_ids.shape)
         # delete bos token (first timestep)
         audio_ids = audio_ids[:, 1:]
         # process unit to original mimi codec
@@ -123,7 +147,9 @@ class SpeechUnitModel(nn.Module):
         for i in range(1, self.num_heads):
             add_tensor[i, :] = self.output_dim * (i)
         audio_ids = audio_ids - add_tensor
-        audio_ids = audio_ids.unsqueeze(0)
+        if self.num_heads > 1:
+            audio_ids = audio_ids.unsqueeze(0)
+        print("[DEBUG] Final shape of audio_ids after processing:", audio_ids.shape)
         with torch.no_grad():
             # input dimension: (bs_size, 8, seq_len)
             audio_values = vocoder.decode(audio_ids)[0]
