@@ -8,12 +8,6 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 # Import the SpeechUnitModel from model.py
 from model import SpeechUnitModel
-
-# Import the GLMvocoder from decoder.py and necessary dependencies
-sys.path.insert(0, "./GLM-4-Voice/cosyvoice")
-sys.path.insert(0, "./GLM-4-Voice/third_party/Matcha-TTS")
-from flow_inference import AudioDecoder
-
 # Import the GLMvocoder from decoder.py
 from decoder import GLMvocoder
 

@@ -5,9 +5,12 @@ import torchaudio
 import torch
 import uuid
 import wandb
+# How to get the current directory?
 
-sys.path.insert(0, "./GLM-4-Voice/cosyvoice")
-sys.path.insert(0, "./GLM-4-Voice/third_party/Matcha-TTS")
+sys.path.append("./GLM-4-Voice")
+sys.path.append("./GLM-4-Voice/cosyvoice")
+sys.path.append("GLM-4-Voice/third_party/Matcha-TTS")
+print("System paths updated: ", sys.path)
 class GLMvocoder:
     def __init__(self, device):
         base_path = 'GLM-4-Voice'
