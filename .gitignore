@@ -5,3 +5,5 @@ wandb/
 checkpoints*
 *.wav
 .env
+ckpts/
+output/
