@@ -29,17 +29,14 @@ class MimiUnitDataset(Dataset):
         item = self.dataset[idx]
 
         # Process the text into Llama3 index
-        data_input = [{'role': 'assistant', "content": item[self.text_column]}]
+        # data_input = [{'role': 'assistant', "content": item[self.text_column]}]
+        text = item[self.text_column]
+        input_ids = self.tokenizer.encode(text, return_tensors="pt")
 
         # Process the audio unit from list to tensor, and add index to each dimension
         labels = torch.tensor(item[self.unit_column], dtype=torch.long)
-        input_ids = self.tokenizer.apply_chat_template(
-            data_input,
-            add_generation_prompt=False,
-            return_tensors="pt"
-        )
-        # Cut llama generate template index
-        input_ids = input_ids[:, 5:]
+        
+        input_ids = self.tokenizer.encode()
 
         # If label is 1D, add a dimension
         if len(labels.shape) == 1:
@@ -135,7 +132,8 @@ def filter_dataset(hf_dataset, tokenizer, text_column='text', unit_column='unit'
             if text_column not in item or unit_column not in item:
                 return False
             
-            data_input = [{'role': 'assistant', "content": item[text_column]}]
+            text = item[text_column]
+            data_input = [{'role': 'assistant', "content": text}]
             labels = torch.tensor(item[unit_column], dtype=torch.long)
             
             # Handle 1D labels case
@@ -149,12 +147,14 @@ def filter_dataset(hf_dataset, tokenizer, text_column='text', unit_column='unit'
             elif labels.shape[0] != num_layers:
                 return False
             
-            input_ids = tokenizer.apply_chat_template(
-                data_input,
-                add_generation_prompt=False,
-                return_tensors="pt"
-            )
-            input_ids = input_ids[:, 5:]
+            # input_ids = tokenizer.apply_chat_template(
+            #     data_input,
+            #     add_generation_prompt=False,
+            #     return_tensors="pt"
+            # )
+            # input_ids = input_ids[:, 5:]
+            
+            input_ids = tokenizer.encode(text, return_tensors="pt")
             
             return labels.shape[1] > input_ids.shape[1] + 1
             

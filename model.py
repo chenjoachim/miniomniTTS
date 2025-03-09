@@ -87,24 +87,14 @@ class SpeechUnitModel(nn.Module):
         data_input = [{'role': 'assistant', "content": input_text}]
         model_id = self.model_id
         tokenizer = AutoTokenizer.from_pretrained(model_id)
-        input_ids = tokenizer.apply_chat_template(
-                data_input,
-                add_generation_prompt=False,
-                return_tensors="pt"
-            )
-        blank_input_ids = tokenizer.apply_chat_template(
-            [{'role': 'assistant', "content": ""}],
-            add_generation_prompt=False,
-            return_tensors="pt"
-        )
-        # Duplicate to a batch
-        print("[DEBUG] shape of input_ids:", input_ids.shape)
-        print("[DEBUG] shape of blank ids", blank_input_ids.shape)
-        print("[DEBUG] First 10 tokens:", input_ids[0, :10])
-        print("[DEBUG] First 10 tokens (blank):", blank_input_ids)
-        
-        # delete template index
-        input_ids = input_ids[:, 5:]
+        # input_ids = tokenizer.apply_chat_template(
+        #         data_input,
+        #         add_generation_prompt=False,
+        #         return_tensors="pt"
+        #     )
+        # # delete template index
+        # input_ids = input_ids[:, 5:]
+        input_ids = tokenizer.encode(input_text, return_tensors="pt")
         _, seq_length = input_ids.shape
         input_ids = input_ids.to(next(self.parameters()).device)
         
