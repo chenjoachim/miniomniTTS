@@ -36,7 +36,7 @@ class MimiUnitDataset(Dataset):
         # Process the audio unit from list to tensor, and add index to each dimension
         labels = torch.tensor(item[self.unit_column], dtype=torch.long)
         
-        input_ids = self.tokenizer.encode()
+        # input_ids = self.tokenizer.encode()
 
         # If label is 1D, add a dimension
         if len(labels.shape) == 1:
