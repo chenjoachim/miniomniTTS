@@ -123,7 +123,7 @@ class SpeechUnitTrainer:
             else:
                 print(f"Epoch {epoch + 1}: Train Loss = {avg_train_loss:.4f}")
 
-            if self.checkpoint_dir and epoch % 3 == 0:
+            if self.checkpoint_dir and (epoch+1) % 20 == 0:
                 self.save_checkpoint(f"checkpoint_epoch_{epoch + 1}.pth")
 
     def _get_grad_norm(self) -> float:
@@ -174,7 +174,7 @@ class SpeechUnitTrainer:
         print(f"Checkpoint saved to {checkpoint_path}")
         self._manage_checkpoints()
 
-    def _manage_checkpoints(self, max_checkpoints=5):
+    def _manage_checkpoints(self, max_checkpoints=3):
         checkpoint_files = sorted(glob.glob(os.path.join(self.checkpoint_dir, "checkpoint_epoch_*.pth")))
         if len(checkpoint_files) > max_checkpoints:
             os.remove(checkpoint_files[0])
