@@ -22,6 +22,7 @@ class SpeechUnitModel(nn.Module):
         self.num_heads = num_heads
         self.output_dim = output_dim
         self.model_id = model_id
+        self.tokenizer = AutoTokenizer.from_pretrained(model_id)
 
         # (2048 + 2 (EOS + BOS) )codebook * 8 head , 2048 as begin-of-audio, 2049 as end-of-audio
         self.codebook_size = output_dim * num_heads
@@ -86,7 +87,7 @@ class SpeechUnitModel(nn.Module):
         # process input_text into index
         data_input = [{'role': 'assistant', "content": input_text}]
         model_id = self.model_id
-        tokenizer = AutoTokenizer.from_pretrained(model_id)
+        # tokenizer = AutoTokenizer.from_pretrained(model_id)
         # input_ids = tokenizer.apply_chat_template(
         #         data_input,
         #         add_generation_prompt=False,
@@ -94,7 +95,7 @@ class SpeechUnitModel(nn.Module):
         #     )
         # # delete template index
         # input_ids = input_ids[:, 5:]
-        input_ids = tokenizer.encode(input_text, return_tensors="pt")
+        input_ids = self.tokenizer.encode(input_text, return_tensors="pt")
         _, seq_length = input_ids.shape
         input_ids = input_ids.to(next(self.parameters()).device)
         
@@ -106,26 +107,16 @@ class SpeechUnitModel(nn.Module):
         with torch.no_grad():
             for i in range(1, max_length):
                 if i > seq_length:
-                    padding = torch.full((1,1), tokenizer.eos_token_id, dtype=torch.long, device=next(self.parameters()).device)
+                    padding = torch.full((1,1), self.tokenizer.eos_token_id, dtype=torch.long, device=next(self.parameters()).device)
                     input_ids = torch.cat([input_ids, padding], dim=1)
-                print("[DEBUG] shape of ids passed to model:", input_ids[:, :i].shape)
-                print("[DEBUG] shape of audio_ids passed to model:", audio_ids.shape)
                 outputs = self(input_ids=input_ids[:, :i], audio_ids=audio_ids)
                 # Avoid other layer decode eos
-                print("[DEBUG] shape of outputs:", outputs.shape)
                 if self.output_dim > 1:
-                    outputs[:,1:,:,self.num_heads - 1] = float('-inf')
-                print("[DEBUG] shape of outputs after masking:", outputs.shape)
+                    outputs[:,1:,:,self.output_dim - 1] = float('-inf')
                 # Print future shape
-                print("[DEBUG] shape of squeeze:", outputs.squeeze(0).shape)
-                print("[DEBUG] shape of squeeze:", outputs.squeeze(0)[:,-1].shape)
-                print("[DEBUG] shape of squeeze:", outputs.squeeze(0)[:,-1].argmax(-1).shape)
-                print("[DEBUG] shape of squeeze:", outputs.squeeze(0)[:,-1].argmax(-1).unsqueeze(-1).shape)
                 current_audio_ids = outputs.squeeze(0)[:,-1].argmax(-1).unsqueeze(-1)
-                print("[DEBUG] shape of current_audio_ids:", current_audio_ids.shape)
-                # Stop when output is eos (2049)
-                print("[DEBUG] current_audio_ids:", current_audio_ids)
-                if current_audio_ids[0] == self.num_heads - 1:
+                 # Stop when output is eos (2049)
+                if current_audio_ids[0] == self.output_dim - 1:
                     break
                 current_audio_ids = current_audio_ids+add_tensor
                 audio_ids = torch.cat([audio_ids, current_audio_ids], dim=-1)
@@ -140,6 +131,8 @@ class SpeechUnitModel(nn.Module):
         if self.num_heads > 1:
             audio_ids = audio_ids.unsqueeze(0)
         print("[DEBUG] Final shape of audio_ids after processing:", audio_ids.shape)
+        # print(audio_ids)
+        # audio_ids = torch.tensor([[ 12881, 15667, 12829, 8102, 12821, 12433, 11534, 14630, 12166, 5760, 3745, 10949, 1596, 2084, 11355, 14755, 14713, 795, 15825, 13491, 2513, 596, 12573, 7142, 6865, 3214, 1552, 1907, 4270, 12969, 16303, 5231, 2018, 2794, 4701, 7640, 293, 15294, 14505, 5386, 6746, 11047, 7859, 308, 7912, 9495, 13181, 8989, 1722, 4105, 2073, 596, 7299, 13472, 4380, 2051, 10017, 11103, 6265, 1774, 10175, 3882, 15084, 9223, 1517, 6582, 14811, 14619, 7198, 14510, 8442, 13436, 6388, 8878, 14255, 4380, 11538, 4986, 6906, 12308, 128, 7093, 5777, 7040, 6978, 11848, 3229, 10075, 1106, 6457, 10594, 15668, 9029, 5901, 9392, 12587, 7567, 16187, 3289, 4846, 2752, 10726, 12563, 5454, 4228, 11783, 5889, 501, 16039, 15263, 5211, 8112, 3572, 16265, 12282, 8414, 8878, 142, 5970, 10654, 16148, 10686, 15903, 2471, 11083, 14318, 13543, 5365, 9490, 3835, 8204, 10495, 15177, 8529, 8022, 12989, 10888, 6132, 1934, 11157, 1155, 5834, 8184, 15848, 62, 8418, 3976, 1825, 10428, 16194, 2961, 8287, 3856, 1719, 14658, 5666, 14790, 1502, 30, 5004, 5606, 15666, 6168, 14910, 16121, 9062, 6150, 8227, 8093, 2350, 2350, 15411, 15411, 15411, 15411, 15411, 15411, 15411, 15411, 12072 ]], device=next(self.parameters()).device)
         with torch.no_grad():
             # input dimension: (bs_size, 8, seq_len)
             audio_values = vocoder.decode(audio_ids)[0]
