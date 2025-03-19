@@ -219,6 +219,7 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--checkpoint_dir", type=str, default="ckpts/checkpoints")
     parser.add_argument("--do_eval", action="store_true")
+    parser.add_argument("--from_disk", action="store_true")
     args = parser.parse_args()
     
     
@@ -234,7 +235,13 @@ def main():
     print("\n[DEBUG] Loading dataset...")
     
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    ds = load_dataset(dataset_name, streaming=True)
+    if args.from_disk:
+        original_ds = load_from_disk(dataset_name)
+        print("[DEBUG] Successfully loaded from disk")
+        ds = iter(original_ds.select_columns(["label_codec", "label_text"]))
+        print("[DEBUG] Change to iterable format")
+    else:
+        ds = load_dataset(dataset_name, streaming=True)["train"]
     
     def collect_and_save(iterable_dataset, num_samples=64):
         """
@@ -244,7 +251,7 @@ def main():
         hf_dataset = Dataset.from_list(collected_samples)
         return hf_dataset
     
-    test_ds = collect_and_save(ds['train'], num_samples=args.num_samples)
+    test_ds = collect_and_save(ds, num_samples=args.num_samples)
     if args.do_eval:
         # 0.9 as training set, 0.1 as validation set
         split_ds = test_ds.train_test_split(test_size=0.1)
