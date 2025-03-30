@@ -1,3 +1,5 @@
+from sklearn import base
+from sympy import use
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
 import torch
@@ -10,7 +12,8 @@ import argparse
 
 # Extract only the first three layers from Llama3's base model
 class SpeechUnitModel(nn.Module):
-    def __init__(self, base_model, llama_layers=3, output_dim=2050, num_heads=8, model_id="meta-llama/Llama-3.2-3B-Instruct"):
+    def __init__(self, base_model, llama_layers=3, output_dim=2050, num_heads=8, model_id="meta-llama/Llama-3.2-3B-Instruct", use_full_model=True,
+                 preserve_lm_head=True):
         super(SpeechUnitModel, self).__init__()
         
         # Configuration and base model initialization
@@ -32,7 +35,10 @@ class SpeechUnitModel(nn.Module):
         self.token_weights = nn.Parameter(torch.ones(num_heads))
 
         # Transformer layers
-        self.layers = torch.nn.ModuleList(base_model.model.layers[:llama_layers])
+        if use_full_model:
+            self.layers = base_model.model.layers
+        else:
+            self.layers = torch.nn.ModuleList(base_model.model.layers[:llama_layers])
         for i in range(len(self.layers)):
             self.layers[i].self_attn.is_causal = True
 
@@ -41,6 +47,29 @@ class SpeechUnitModel(nn.Module):
 
         # Prediction heads
         self.heads = nn.ModuleList([nn.Linear(embed_dim, output_dim) for _ in range(num_heads)])
+        self.lm_head = base_model.lm_head if preserve_lm_head else None
+
+        # Freeze base model parameters
+        self._freeze_base_model()
+
+    def _freeze_base_model(self):
+        # Freeze embedding layer
+        for param in self.embed_tokens.parameters():
+            param.requires_grad = False
+            
+        # Freeze transformer layers
+        for layer in self.layers:
+            for param in layer.parameters():
+                param.requires_grad = False
+                
+        # Freeze normalization layer
+        for param in self.norm.parameters():
+            param.requires_grad = False
+            
+        # Freeze LM head if present
+        if self.lm_head is not None:
+            for param in self.lm_head.parameters():
+                param.requires_grad = False
 
     def forward(self, input_ids, audio_ids=None, attention_mask=None, position_ids=None, position_embeddings=None):
         '''
@@ -78,7 +107,11 @@ class SpeechUnitModel(nn.Module):
         # Prediction heads
         logits = [head(hidden_states) for head in self.heads]
         logits = torch.stack(logits, dim=1)  # Output dimension: (batch size, 8, output_dim)
-        return logits
+        if self.lm_head is not None:
+            lm_logits = self.lm_head(hidden_states)
+            return logits, lm_logits
+        else:
+            return logits, None
 
     def _extend_attention_mask(self, attention_mask, device):
         return (1.0 - attention_mask[:, None, None, :]) * -10000.0
@@ -109,7 +142,7 @@ class SpeechUnitModel(nn.Module):
                 if i > seq_length:
                     padding = torch.full((1,1), self.tokenizer.eos_token_id, dtype=torch.long, device=next(self.parameters()).device)
                     input_ids = torch.cat([input_ids, padding], dim=1)
-                outputs = self(input_ids=input_ids[:, :i], audio_ids=audio_ids)
+                outputs, _ = self(input_ids=input_ids[:, :i], audio_ids=audio_ids)
                 # Avoid other layer decode eos
                 if self.output_dim > 1:
                     outputs[:,1:,:,self.output_dim - 1] = float('-inf')
@@ -166,7 +199,10 @@ def main():
                         help="Use mock vocoder (since real one is unavailable)")
     
     args = parser.parse_args()
-    
+    if args.layers == -1:
+        use_full_model = True
+    else:
+        use_full_model = False
     # Check for CUDA availability
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
@@ -205,7 +241,9 @@ def main():
         llama_layers=args.layers,
         output_dim=2050,
         num_heads=8,
-        model_id=args.model
+        model_id=args.model,
+        use_full_model=use_full_model,
+        preserve_lm_head=True
     ).to(device)
     
     speech_model.eval()

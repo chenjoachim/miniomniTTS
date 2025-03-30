@@ -141,7 +141,7 @@ class SpeechUnitTrainer:
         bos_labels = torch.full((batch_size, self.vocoder_layer, 1), self.codebook_size).to(self.device)
         eos_labels = torch.full((batch_size, self.vocoder_layer, 1), self.codebook_size+1).to(self.device)
         generate_audio_ids = torch.cat([bos_labels, labels], dim=-1)
-        logits = self.model(input_ids=input_ids, audio_ids=generate_audio_ids)
+        logits, _ = self.model(input_ids=input_ids, audio_ids=generate_audio_ids)
         logits = logits.view(-1, self.codebook_size+2)
         # print("logits shape: ", logits.shape)
         # print("labels shape: ", labels.shape)
@@ -211,7 +211,7 @@ def main():
     from transformers import AutoTokenizer
     
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_name", type=str, default="meta-llama/Llama-3.2-3B-Instruct")
+    parser.add_argument("--model_name", type=str, default="meta-llama/Llama-3.2-1B-Instruct")
     parser.add_argument("--dataset_name", type=str, default="Allen172/GLM-4_codec_dataset")
     parser.add_argument("--num_samples", type=int, default=64)
     parser.add_argument("--num_epochs", type=int, default=100)
@@ -220,6 +220,8 @@ def main():
     parser.add_argument("--checkpoint_dir", type=str, default="ckpts/checkpoints")
     parser.add_argument("--do_eval", action="store_true")
     parser.add_argument("--from_disk", action="store_true")
+    parser.add_argument("--num_layers", type=int, default=-1)
+    parser.add_argument("--use_full_model", action="store_true")
     args = parser.parse_args()
     
     
@@ -286,10 +288,12 @@ def main():
     print("\n[DEBUG] Initializing SpeechUnitModel...")
     speech_model = SpeechUnitModel(
         base_model,
-        llama_layers=3,
+        llama_layers=args.num_layers,
         output_dim=vocoder_config["codebook_size"]+2, # Including BOS and EOS tokens
         num_heads=vocoder_config["vocoder_layer"],
         model_id=model_name,
+        use_full_model=args.use_full_model,
+        preserve_lm_head=args.use_full_model
     ).to('cuda')
     print("\n[DEBUG] Finished initializing SpeechUnitModel.")
     
