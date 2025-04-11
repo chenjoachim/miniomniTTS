@@ -12,7 +12,7 @@ from typing import Optional, Dict, Any
 # import peft
 # from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from datasets import Dataset, load_dataset, load_from_disk, concatenate_datasets
-from transformers import AutoConfig
+from transformers import AutoConfig, get_cosine_schedule_with_warmup
 
 import argparse
 
@@ -27,6 +27,8 @@ class SpeechUnitTrainer:
         val_dataset: Optional[torch.utils.data.Dataset] = None,
         optimizer_cls: torch.optim.Optimizer = AdamW,
         lr: float = 2e-4,
+        warmup_ratio: float = 0.1,
+        weight_decay: float = 0.01,
         lora_config: Optional[Dict[str, Any]] = None,
         batch_size: int = 16,
         num_epochs: int = 3,
@@ -38,6 +40,7 @@ class SpeechUnitTrainer:
         checkpoint_dir: Optional[str] = None,
         codebook_size: int = 2048, # NOT Including BOS and EOS tokens
         vocoder_layer: int = 8,
+        val_interval: int = 3000,
         **optimizer_kwargs
     ):
 
@@ -60,7 +63,14 @@ class SpeechUnitTrainer:
                 val_dataset, batch_size=batch_size, shuffle=False, collate_fn=mimi_collate_fn, pin_memory=True
             )
         self.criterion = CrossEntropyLoss(ignore_index=0)
-        self.optimizer = optimizer_cls(self.model.parameters(), lr=lr, **optimizer_kwargs)
+        self.optimizer = optimizer_cls(self.model.parameters(), lr=lr, weight_decay=weight_decay, **optimizer_kwargs)
+        self.scheduler = get_cosine_schedule_with_warmup(
+            self.optimizer,
+            num_warmup_steps=int(len(self.train_dataloader) * self.num_epochs * warmup_ratio),
+            num_training_steps=len(self.train_dataloader) * self.num_epochs,
+        )
+        
+        self.val_interval = val_interval
 
         if use_wandb:
             wandb.init(project=project_name)
@@ -93,7 +103,7 @@ class SpeechUnitTrainer:
                 clipped_grad_norm = self._get_grad_norm()
                 
                 self.optimizer.step()
-
+                self.scheduler.step()
                 train_loss += loss.item()
                 train_steps += 1
                 progress_bar.set_postfix({
@@ -111,6 +121,13 @@ class SpeechUnitTrainer:
                         'clipped_grad_norm': clipped_grad_norm,
                         'grad_norm_ratio': clipped_grad_norm / grad_norm if grad_norm > 0 else 0
                     })
+                    
+                if self.val_dataloader and step % self.val_interval == 0:
+                    val_loss = self.validate()
+                    if val_loss < best_val_loss:
+                        best_val_loss = val_loss
+                        self.save_checkpoint(f"best_model.pth")
+                    print(f"Validation Loss: {val_loss:.4f}")
 
             avg_train_loss = train_loss / train_steps
 
@@ -170,7 +187,10 @@ class SpeechUnitTrainer:
 
     def save_checkpoint(self, filename: str):
         checkpoint_path = os.path.join(self.checkpoint_dir, filename)
-        torch.save(self.model.state_dict(), checkpoint_path)
+        # Only save trainable component
+        model_state_dict = self.model.state_dict()
+        trainable_state_dict = {k: v for k, v in model_state_dict.items() if v.requires_grad}
+        torch.save(trainable_state_dict, checkpoint_path)
         print(f"Checkpoint saved to {checkpoint_path}")
         self._manage_checkpoints()
 
@@ -217,6 +237,10 @@ def main():
     parser.add_argument("--num_epochs", type=int, default=100)
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--max_grad_norm", type=float, default=1.0)
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=4)
+    parser.add_argument("--warmup_ratio", type=float, default=0.1)
+    parser.add_argument("--weight_decay", type=float, default=0.01)
     parser.add_argument("--checkpoint_dir", type=str, default="ckpts/checkpoints")
     parser.add_argument("--do_eval", action="store_true")
     parser.add_argument("--from_disk", action="store_true")
@@ -325,8 +349,11 @@ def main():
         val_dataset=val_dataset,
         batch_size=args.batch_size,
         num_epochs=args.num_epochs,
-        max_grad_norm=10.0,
+        max_grad_norm=args.max_grad_norm,
         lr=args.lr,
+        warmup_ratio=args.warmup_ratio,
+        weight_decay=args.weight_decay,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
         use_wandb=True,
         project_name="speech_unit_training",
         checkpoint_dir=args.checkpoint_dir,

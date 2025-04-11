@@ -14,7 +14,7 @@ from transformers.models.llama.modeling_llama import LlamaModel, LlamaRotaryEmbe
 import torch.nn as nn
 
 def initialize_speech_unit_model(checkpoint_path=None, llama_components_path="llama_partial.pt", 
-                                output_dim=2050, num_heads=8, model_id="meta-llama/Llama-3.2-3B-Instruct"):
+                                output_dim=2050, num_heads=8, model_id="meta-llama/Llama-3.2-3B-Instruct", use_full_model=True):
     # Load the extracted LLaMa components
     print(f"Loading LLaMa components from {llama_components_path}")
     llama_components = torch.load(llama_components_path, map_location="cpu")
@@ -27,7 +27,7 @@ def initialize_speech_unit_model(checkpoint_path=None, llama_components_path="ll
     print(f"Found {num_layers} layers with embedding dimension {embed_dim}")
     
     # Create LLaMa config
-    config = LlamaConfig.from_pretrained("meta-llama/Llama-3.2-3B-Instruct")
+    config = LlamaConfig.from_pretrained(model_id)
     config.hidden_size = embed_dim
     config.num_hidden_layers = num_layers
     
@@ -59,7 +59,8 @@ def initialize_speech_unit_model(checkpoint_path=None, llama_components_path="ll
         llama_layers=num_layers,
         output_dim=output_dim,
         num_heads=num_heads,
-        model_id=model_id  # Just a placeholder
+        model_id=model_id,  # Just a placeholder
+        use_full_model=use_full_model
     )
     
     # Load checkpoint if provided
@@ -68,11 +69,11 @@ def initialize_speech_unit_model(checkpoint_path=None, llama_components_path="ll
         checkpoint = torch.load(checkpoint_path, map_location="cpu")
         # Handle possible key prefixes
         if "model_state_dict" in checkpoint:
-            speech_model.load_state_dict(checkpoint["model_state_dict"])
+            speech_model.load_state_dict(checkpoint["model_state_dict"], strict=False)
         elif "state_dict" in checkpoint:
-            speech_model.load_state_dict(checkpoint["state_dict"])
+            speech_model.load_state_dict(checkpoint["state_dict"], strict=False)
         else:
-            speech_model.load_state_dict(checkpoint)
+            speech_model.load_state_dict(checkpoint, strict=False)
     
     print("SpeechUnitModel initialization complete!")
     return speech_model
@@ -91,7 +92,8 @@ def run_inference(args):
         checkpoint_path=args.checkpoint,
         output_dim=16386,
         num_heads=1,
-        model_id=args.model
+        model_id=args.model,
+        use_full_model= False if args.layers > 0 else True
     ).to(device)
     # Initialize speech model
     
