@@ -17,7 +17,7 @@ class SpeechUnitModel(nn.Module):
         super(SpeechUnitModel, self).__init__()
         
         # Configuration and base model initialization
-        config = LlamaConfig()
+        config = AutoConfig.from_pretrained(model_id)
         config.num_hidden_layers = llama_layers
         # Embedding layers
         self.embed_tokens = base_model.model.embed_tokens
