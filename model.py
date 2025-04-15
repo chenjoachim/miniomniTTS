@@ -18,7 +18,8 @@ class SpeechUnitModel(nn.Module):
         
         # Configuration and base model initialization
         config = AutoConfig.from_pretrained(model_id)
-        config.num_hidden_layers = llama_layers
+        if not use_full_model:
+            config.num_hidden_layers = llama_layers
         # Embedding layers
         self.embed_tokens = base_model.model.embed_tokens
         original_vocab_size, embed_dim = self.embed_tokens.weight.shape
