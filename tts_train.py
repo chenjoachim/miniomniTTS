@@ -40,7 +40,7 @@ class SpeechUnitTrainer:
         checkpoint_dir: Optional[str] = None,
         codebook_size: int = 2048, # NOT Including BOS and EOS tokens
         vocoder_layer: int = 8,
-        val_interval: int = 3000,
+        val_per_epoch: int = 3,
         **optimizer_kwargs
     ):
 
@@ -70,7 +70,8 @@ class SpeechUnitTrainer:
             num_training_steps=len(self.train_dataloader) * self.num_epochs,
         )
         
-        self.val_interval = val_interval
+        self.val_per_epoch = val_per_epoch
+        self.steps_per_epoch = len(self.train_dataloader)
 
         if use_wandb:
             wandb.init(project=project_name)
@@ -80,6 +81,7 @@ class SpeechUnitTrainer:
 
     def train(self):
         best_val_loss = float('inf')
+        global_step = 0
         for epoch in range(self.num_epochs):
             self.model.train()
             train_loss = 0
@@ -106,6 +108,7 @@ class SpeechUnitTrainer:
                 self.scheduler.step()
                 train_loss += loss.item()
                 train_steps += 1
+                global_step += 1
                 progress_bar.set_postfix({
                     'train_loss': train_loss / train_steps,
                     'grad_norm': grad_norm,
@@ -122,11 +125,11 @@ class SpeechUnitTrainer:
                         'grad_norm_ratio': clipped_grad_norm / grad_norm if grad_norm > 0 else 0
                     })
                     
-                if self.val_dataloader and step % self.val_interval == 0:
+                if self.val_dataloader and step in [int(self.steps_per_epoch * i / self.val_per_epoch) for i in range(1, self.val_per_epoch)]:
                     val_loss = self.validate()
                     if val_loss < best_val_loss:
                         best_val_loss = val_loss
-                        self.save_checkpoint(f"best_model.pth")
+                        self.save_checkpoint(f"best_model_epoch{epoch}_step{global_step}.pth")
                     print(f"Validation Loss: {val_loss:.4f}")
 
             avg_train_loss = train_loss / train_steps
@@ -135,7 +138,7 @@ class SpeechUnitTrainer:
                 val_loss = self.validate()
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
-                    self.save_checkpoint(f"best_model.pth")
+                    self.save_checkpoint(f"best_model_epoch{epoch}_step{global_step}.pth")
                 print(f"Epoch {epoch + 1}: Train Loss = {avg_train_loss:.4f}, Val Loss = {val_loss:.4f}")
             else:
                 print(f"Epoch {epoch + 1}: Train Loss = {avg_train_loss:.4f}")

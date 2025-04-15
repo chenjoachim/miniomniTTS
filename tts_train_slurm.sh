@@ -31,7 +31,7 @@ nvidia-smi
 
 # Set up Wandb login
 echo -e "\n====== Setting up Wandb ======\n"
-export WANDB_API_KEY="REMOVED_WANDB_KEY"  # Replace with your actual API key
+export WANDB_API_KEY=$(cat $HOME/.wandb_key)  # Replace with your actual API key
 $CONDA_PREFIX/bin/conda run -n "$CONDA_DEFAULT_ENV" python -c "import wandb; wandb.login()"
 # Create output directory if it doesn't exist
 mkdir -p /work/smartllm172/miniomniTTS/checkpoints
