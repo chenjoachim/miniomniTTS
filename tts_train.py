@@ -267,13 +267,33 @@ def main():
         ds = iter(original_ds.select_columns(["label_codec", "label_text"]))
         print("[DEBUG] Change to iterable format")
     else:
-        ds = load_dataset(dataset_name, streaming=True)["train"]
+        original_ds = load_dataset(dataset_name, streaming=True)["train"]
+        ds = iter(original_ds.select_columns(["label_codec", "label_text"]))
+        print("[DEBUG] Change to iterable format with selected columns")
     
-    def collect_and_save(iterable_dataset, num_samples=64):
+    #def collect_and_save(iterable_dataset, num_samples=64):
         """
         Collects a specified number of samples from an IterableDataset and saves them as a Hugging Face Dataset.
         """
-        collected_samples = list(islice(iterable_dataset, num_samples))
+    #    collected_samples = list(islice(iterable_dataset, num_samples))
+    #    hf_dataset = Dataset.from_list(collected_samples)
+    def collect_and_save(iterable_dataset, num_samples=64):
+        """
+        Collects a specified number of samples from an IterableDataset and saves them as a Hugging Face Dataset.
+        Includes a progress bar to track completion.
+        """
+        # Create an empty list to store samples
+        collected_samples = []
+    
+        # Use tqdm to create a progress bar
+        with tqdm(total=num_samples, desc="Collecting samples") as pbar:
+            for i, sample in enumerate(iterable_dataset):
+                if i >= num_samples:
+                    break
+                collected_samples.append(sample)
+                pbar.update(1)
+    
+        # Convert to Hugging Face dataset
         hf_dataset = Dataset.from_list(collected_samples)
         return hf_dataset
     
