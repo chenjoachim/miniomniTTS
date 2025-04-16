@@ -192,7 +192,13 @@ class SpeechUnitTrainer:
         checkpoint_path = os.path.join(self.checkpoint_dir, filename)
         # Only save trainable component
         model_state_dict = self.model.state_dict()
-        trainable_state_dict = {k: v for k, v in model_state_dict.items() if v.requires_grad}
+        # Get names of trainable parameters
+        trainable_param_names = [name for name, param in self.model.named_parameters() if param.requires_grad]
+
+        # Filter state dict using those names
+        trainable_state_dict = {k: v for k, v in model_state_dict.items() if k in trainable_param_names}
+        print("Trainable state dict keys:")
+        print(trainable_state_dict.keys())
         torch.save(trainable_state_dict, checkpoint_path)
         print(f"Checkpoint saved to {checkpoint_path}")
         self._manage_checkpoints()
@@ -249,6 +255,9 @@ def main():
     parser.add_argument("--from_disk", action="store_true")
     parser.add_argument("--num_layers", type=int, default=-1)
     parser.add_argument("--use_full_model", action="store_true")
+    parser.add_argument("--fully_FT", action="store_true")
+    parser.add_argument("--test_ratio", type=float, default=0.1)
+    parser.add_argument("--val_per_epoch", type=int, default=3)
     args = parser.parse_args()
     
     
@@ -303,7 +312,7 @@ def main():
     test_ds = collect_and_save(ds, num_samples=args.num_samples)
     if args.do_eval:
         # 0.9 as training set, 0.1 as validation set
-        split_ds = test_ds.train_test_split(test_size=0.1)
+        split_ds = test_ds.train_test_split(test_size=args.test_ratio, shuffle=True)
         train_ds = split_ds['train']
         val_ds = split_ds['test']
     else:
@@ -340,7 +349,8 @@ def main():
         num_heads=vocoder_config["vocoder_layer"],
         model_id=model_name,
         use_full_model=args.use_full_model,
-        preserve_lm_head=args.use_full_model
+        preserve_lm_head=args.use_full_model,
+        fully_FT=args.fully_FT,
     ).to('cuda')
     print("\n[DEBUG] Finished initializing SpeechUnitModel.")
     
@@ -382,6 +392,7 @@ def main():
         checkpoint_dir=args.checkpoint_dir,
         codebook_size=16384,
         vocoder_layer=1,
+        val_per_epoch=args.val_per_epoch,
     )
     print("\n[DEBUG] Finished initializing SpeechUnitTrainer.")
     print("\n[DEBUG] All set! Training model...")

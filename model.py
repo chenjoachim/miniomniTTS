@@ -13,7 +13,7 @@ import argparse
 # Extract only the first three layers from Llama3's base model
 class SpeechUnitModel(nn.Module):
     def __init__(self, base_model, llama_layers=3, output_dim=2050, num_heads=8, model_id="meta-llama/Llama-3.2-3B-Instruct", use_full_model=True,
-                 preserve_lm_head=True):
+                 preserve_lm_head=True, fully_FT=False):
         super(SpeechUnitModel, self).__init__()
         
         # Configuration and base model initialization
@@ -51,7 +51,8 @@ class SpeechUnitModel(nn.Module):
         self.lm_head = base_model.lm_head if preserve_lm_head else None
 
         # Freeze base model parameters
-        self._freeze_base_model()
+        if not fully_FT:
+            self._freeze_base_model()
 
     def _freeze_base_model(self):
         # Freeze embedding layer
@@ -89,7 +90,7 @@ class SpeechUnitModel(nn.Module):
             audio_embedding = self.audio_embed(audio_ids)   # shape: (num_heads, seq_len, embed_dim)
             weight_audio = torch.sum(audio_embedding * self.token_weights.view(1, -1, 1, 1), dim=1)
 
-            hidden_states = hidden_states + weight_audio
+            hidden_states = (hidden_states + weight_audio) / (torch.sum(self.token_weights) + 1)
 
         if position_embeddings is None:
             position_embeddings = self.rotary_emb(hidden_states, position_ids)
