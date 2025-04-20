@@ -131,6 +131,7 @@ class SpeechUnitTrainer:
                         best_val_loss = val_loss
                         self.save_checkpoint(f"best_model_epoch{epoch}_step{global_step}.pth")
                     print(f"Validation Loss: {val_loss:.4f}")
+                    self.model.train()
 
             avg_train_loss = train_loss / train_steps
 
@@ -160,8 +161,10 @@ class SpeechUnitTrainer:
         assert batch_size == labels.size(0), f"Input and labels must have the same batch size. Got input {batch_size} and label {labels.size(0)}"
         bos_labels = torch.full((batch_size, self.vocoder_layer, 1), self.codebook_size).to(self.device)
         eos_labels = torch.full((batch_size, self.vocoder_layer, 1), self.codebook_size+1).to(self.device)
-        generate_audio_ids = torch.cat([bos_labels, labels], dim=-1)
-        logits, _ = self.model(input_ids=input_ids, audio_ids=generate_audio_ids)
+        generate_audio_ids = torch.cat([eos_labels, bos_labels, labels], dim=-1)
+        logits, text_logits = self.model(input_ids=input_ids, audio_ids=generate_audio_ids)
+        # Drop first predict tokens
+        print("logits shape: ", logits.shape)
         logits = logits.view(-1, self.codebook_size+2)
         # print("logits shape: ", logits.shape)
         # print("labels shape: ", labels.shape)
@@ -170,8 +173,22 @@ class SpeechUnitTrainer:
             add_tensor[:, i, :] = self.codebook_size * (i)
         labels = labels - add_tensor
         labels = torch.cat([labels, eos_labels], dim=-1)
-        return self.criterion(logits, labels.view(-1))
-
+        audio_loss = self.criterion(logits, labels.view(-1))
+        
+        # Get text labels by shifting input_ids
+        text_labels = input_ids[:, 1:]  # Shift right to create targets
+        text_labels = text_labels.reshape(-1)
+        text_logits = text_logits[:, :-1, :]  # Shift left to align with targets
+        text_logits = text_logits.reshape(-1, text_logits.size(-1))
+        text_loss = self.criterion(text_logits, text_labels)
+        # Get the max out of text_logits
+        # text_logits = torch.argmax(text_logits, dim=-1)
+        # print("LABEL:",self.model.tokenizer.decode(text_labels[:10].cpu().numpy()))
+        # print("PRED:",self.model.tokenizer.decode(text_logits[:10].cpu().numpy()))
+        # Combine audio and text loss
+        total_loss = audio_loss + text_loss
+        return total_loss
+        
     def validate(self) -> float:
         self.model.eval()
         total_val_loss = 0
@@ -196,7 +213,7 @@ class SpeechUnitTrainer:
         trainable_param_names = [name for name, param in self.model.named_parameters() if param.requires_grad]
 
         # Filter state dict using those names
-        trainable_state_dict = {k: v for k, v in model_state_dict.items() if k in trainable_param_names}
+        trainable_state_dict = {k: v for k, v in model_state_dict.items() if (k in trainable_param_names or "audio_embed" in k)}
         print("Trainable state dict keys:")
         print(trainable_state_dict.keys())
         torch.save(trainable_state_dict, checkpoint_path)
@@ -258,6 +275,7 @@ def main():
     parser.add_argument("--fully_FT", action="store_true")
     parser.add_argument("--test_ratio", type=float, default=0.1)
     parser.add_argument("--val_per_epoch", type=int, default=3)
+    parser.add_argument("--codebook_ckpt", type=str, default=None)
     args = parser.parse_args()
     
     
@@ -351,6 +369,7 @@ def main():
         use_full_model=args.use_full_model,
         preserve_lm_head=args.use_full_model,
         fully_FT=args.fully_FT,
+        codebook_ckpt=args.codebook_ckpt,
     ).to('cuda')
     print("\n[DEBUG] Finished initializing SpeechUnitModel.")
     
@@ -402,3 +421,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

@@ -35,6 +35,8 @@ class MimiUnitDataset(Dataset):
 
         # Process the audio unit from list to tensor, and add index to each dimension
         labels = torch.tensor(item[self.unit_column], dtype=torch.long)
+        # Pad a BOS token in labels, which is codebook_size
+        labels = torch.cat([torch.full((1, labels.shape[1]), self.codebook_size, dtype=torch.long), labels], dim=0)
         
         # input_ids = self.tokenizer.encode()
 

@@ -14,44 +14,62 @@ from transformers.models.llama.modeling_llama import LlamaModel, LlamaRotaryEmbe
 import torch.nn as nn
 
 def initialize_speech_unit_model(checkpoint_path=None, llama_components_path="llama_partial.pt", 
-                                output_dim=2050, num_heads=8, model_id="meta-llama/Llama-3.2-3B-Instruct", use_full_model=True):
-    # Load the extracted LLaMa components
-    print(f"Loading LLaMa components from {llama_components_path}")
-    llama_components = torch.load(llama_components_path, map_location="cpu")
-    
-    # Get embedding dimensions
-    vocab_size, embed_dim = llama_components["embed_tokens.weight"].shape
-    num_layers = len(set([int(k.split('.')[1]) for k in llama_components.keys() 
-                         if k.startswith("layers.")]))
-    
-    print(f"Found {num_layers} layers with embedding dimension {embed_dim}")
-    
-    # Create LLaMa config
-    config = LlamaConfig.from_pretrained(model_id)
-    config.hidden_size = embed_dim
-    config.num_hidden_layers = num_layers
-    
-    
-    
-    class LlamaModelStub(nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.embed_tokens = nn.Embedding(vocab_size, embed_dim)
-            self.embed_tokens.weight.data.copy_(llama_components["embed_tokens.weight"])
+                                output_dim=2050, num_heads=8, model_id="meta-llama/Llama-3.2-3B-Instruct", use_full_model=True, codebook_ckpt=None):
+    if not use_full_model:
+        try:
+            # Load the extracted LLaMa components
+            print(f"Loading LLaMa components from {llama_components_path}")
+            llama_components = torch.load(llama_components_path, map_location="cpu")
             
-            self.layers = nn.ModuleList([LlamaDecoderLayer(config, i) for i in range(num_layers)])
+            # Get embedding dimensions
+            vocab_size, embed_dim = llama_components["embed_tokens.weight"].shape
+            num_layers = len(set([int(k.split('.')[1]) for k in llama_components.keys() 
+                                if k.startswith("layers.")]))
             
-            self.norm = nn.LayerNorm(embed_dim, bias=False)
-            self.norm.weight.data.copy_(llama_components["norm.weight"])
+            print(f"Found {num_layers} layers with embedding dimension {embed_dim}")
+            
+            # Create LLaMa config
+            config = LlamaConfig.from_pretrained(model_id)
+            config.hidden_size = embed_dim
+            config.num_hidden_layers = num_layers
+            
+            
+            
+            class LlamaModelStub(nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.embed_tokens = nn.Embedding(vocab_size, embed_dim)
+                    self.embed_tokens.weight.data.copy_(llama_components["embed_tokens.weight"])
+                    
+                    self.layers = nn.ModuleList([LlamaDecoderLayer(config, i) for i in range(num_layers)])
+                    
+                    self.norm = nn.LayerNorm(embed_dim, bias=False)
+                    self.norm.weight.data.copy_(llama_components["norm.weight"])
+            
+            class LlamaStub(nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.model = LlamaModelStub()
+                    self.config = config
+            
+            # Create the base model
+            base_model = LlamaStub()
+        except Exception as e:
+            print(f"Error loading LLaMa components: {e}")
+            print("Falling back to full model loading.")
+            # Fallback to loading the full model
+            base_model = AutoModelForCausalLM.from_pretrained(model_id)
+            config = base_model.config
+            vocab_size, embed_dim = base_model.model.embed_tokens.weight.shape
+            num_layers = config.num_hidden_layers
+    else:
+        # Load the full model
+        print(f"Loading full model from {model_id}")
+        base_model = AutoModelForCausalLM.from_pretrained(model_id)
+        config = base_model.config
+        vocab_size, embed_dim = base_model.model.embed_tokens.weight.shape
+        num_layers = config.num_hidden_layers
     
-    class LlamaStub(nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.model = LlamaModelStub()
-            self.config = config
-    
-    # Create the base model
-    base_model = LlamaStub()
     
     # Create the SpeechUnitModel
     speech_model = SpeechUnitModel(
@@ -60,7 +78,8 @@ def initialize_speech_unit_model(checkpoint_path=None, llama_components_path="ll
         output_dim=output_dim,
         num_heads=num_heads,
         model_id=model_id,  # Just a placeholder
-        use_full_model=use_full_model
+        use_full_model=use_full_model,
+        codebook_ckpt=codebook_ckpt,
     )
     
     # Load checkpoint if provided
@@ -93,7 +112,8 @@ def run_inference(args):
         output_dim=16386,
         num_heads=1,
         model_id=args.model,
-        use_full_model= False if args.layers > 0 else True
+        use_full_model= False if args.layers > 0 else True,
+        codebook_ckpt=args.codebook_ckpt,
     ).to(device)
     # Initialize speech model
     
@@ -130,7 +150,8 @@ def run_inference(args):
             audio_values = speech_model.inference(
                 input_text=args.text,
                 vocoder=vocoder,
-                max_length=args.max_length
+                max_length=args.max_length,
+                verbose=args.verbose
             )
         
         # Save the audio output
@@ -171,7 +192,12 @@ if __name__ == "__main__":
                         help="Path to the model checkpoint file")
     parser.add_argument("--sample_rate", type=int, default=24000,
                         help="Sample rate of the result")
+    parser.add_argument("--verbose", action="store_true",
+                        help="Enable verbose output")
+    parser.add_argument("--codebook_ckpt", type=str, default=None,
+                        help="Path to the codebook checkpoint file")
     
     args = parser.parse_args()
     run_inference(args)
+
 

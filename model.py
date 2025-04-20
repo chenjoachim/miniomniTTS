@@ -13,7 +13,7 @@ import argparse
 # Extract only the first three layers from Llama3's base model
 class SpeechUnitModel(nn.Module):
     def __init__(self, base_model, llama_layers=3, output_dim=2050, num_heads=8, model_id="meta-llama/Llama-3.2-3B-Instruct", use_full_model=True,
-                 preserve_lm_head=True, fully_FT=False):
+                 preserve_lm_head=True, fully_FT=False, codebook_ckpt=None):
         super(SpeechUnitModel, self).__init__()
         
         # Configuration and base model initialization
@@ -31,9 +31,27 @@ class SpeechUnitModel(nn.Module):
 
         # (2048 + 2 (EOS + BOS) )codebook * 8 head , 2048 as begin-of-audio, 2049 as end-of-audio
         self.codebook_size = output_dim * num_heads
-        self.audio_embed = nn.Embedding(self.codebook_size, embed_dim)
-        nn.init.xavier_uniform_(self.audio_embed.weight.data)
-
+        
+        
+        self.has_codebook = False
+        if codebook_ckpt is not None:
+            self.has_codebook = True
+            codebook_audio_embed = torch.load(codebook_ckpt, map_location="cpu")["input_embedding.weight"]
+            audio_embed_dim = codebook_audio_embed.shape[1]
+            self.audio_embed = nn.Embedding(self.codebook_size, audio_embed_dim)
+            self.audio_embed.weight.data[:output_dim-2].copy_(codebook_audio_embed)
+            nn.init.xavier_uniform_(self.audio_embed.weight.data[output_dim-2:])
+            # Freeze it
+            # for param in self.audio_embed.parameters():
+            #     param.requires_grad = False
+            self.pre_proj_norm = nn.LayerNorm(audio_embed_dim, eps=1e-6)
+            self.audio_project = nn.Linear(audio_embed_dim, embed_dim)
+            self.post_proj_norm = nn.LayerNorm(embed_dim, eps=1e-6)
+            nn.init.xavier_uniform_(self.audio_project.weight.data)
+        else:
+            self.audio_embed = nn.Embedding(self.codebook_size, embed_dim)
+            nn.init.xavier_uniform_(self.audio_embed.weight.data)
+            
         self.token_weights = nn.Parameter(torch.ones(num_heads))
 
         # Transformer layers
@@ -54,6 +72,10 @@ class SpeechUnitModel(nn.Module):
         # Freeze base model parameters
         if not fully_FT:
             self._freeze_base_model()
+            
+        # else: # freeze unrelated parameters
+        #     self._freeze_partial_model()
+            
 
     def _freeze_base_model(self):
         # Freeze embedding layer
@@ -68,6 +90,16 @@ class SpeechUnitModel(nn.Module):
         # Freeze normalization layer
         for param in self.norm.parameters():
             param.requires_grad = False
+            
+        # Freeze LM head if present
+        if self.lm_head is not None:
+            for param in self.lm_head.parameters():
+                param.requires_grad = False
+    
+    def _freeze_partial_model(self):
+        # Freeze embedding layer
+        for param in self.embed_tokens.parameters():
+            param.requires_grad = False    
             
         # Freeze LM head if present
         if self.lm_head is not None:
@@ -89,6 +121,10 @@ class SpeechUnitModel(nn.Module):
         if audio_ids is not None:
             # audio_ids shape: (num_heads, seq_len)
             audio_embedding = self.audio_embed(audio_ids)   # shape: (num_heads, seq_len, embed_dim)
+            if self.has_codebook:
+                audio_embedding = self.pre_proj_norm(audio_embedding)
+                audio_embedding = self.audio_project(audio_embedding)
+                audio_embedding = self.post_proj_norm(audio_embedding)
             weight_audio = torch.sum(audio_embedding * self.token_weights.view(1, -1, 1, 1), dim=1)
 
             hidden_states = (hidden_states + weight_audio) / (torch.sum(self.token_weights) + 1)
@@ -119,7 +155,7 @@ class SpeechUnitModel(nn.Module):
     def _extend_attention_mask(self, attention_mask, device):
         return (1.0 - attention_mask[:, None, None, :]) * -10000.0
     
-    def inference(self, input_text, vocoder, max_length=150):
+    def inference(self, input_text, vocoder, max_length=150, verbose=False):
         # process input_text into index
         data_input = [{'role': 'assistant', "content": input_text}]
         model_id = self.model_id
@@ -134,18 +170,19 @@ class SpeechUnitModel(nn.Module):
         input_ids = self.tokenizer.encode(input_text, return_tensors="pt")
         _, seq_length = input_ids.shape
         input_ids = input_ids.to(next(self.parameters()).device)
-        
+        text_ids = torch.full((1, 1), (self.tokenizer.bos_token_id), device=next(self.parameters()).device)
         print("[DEBUG] shape of input_ids after template index removal:", input_ids.shape)
+        # pad to max_length first
+        if max_length > seq_length:
+            padding = torch.full((1, max_length - seq_length), self.tokenizer.eos_token_id, dtype=torch.long, device=next(self.parameters()).device)
+            input_ids = torch.cat([input_ids, padding], dim=1)
         audio_ids = torch.full((self.num_heads, 1), (self.output_dim - 2), device=next(self.parameters()).device)
         add_tensor = torch.zeros_like(audio_ids)
         for i in range(1, self.num_heads):
             add_tensor[i, :] = self.output_dim * (i)
         with torch.no_grad():
             for i in range(1, max_length):
-                if i > seq_length:
-                    padding = torch.full((1,1), self.tokenizer.eos_token_id, dtype=torch.long, device=next(self.parameters()).device)
-                    input_ids = torch.cat([input_ids, padding], dim=1)
-                outputs, _ = self(input_ids=input_ids[:, :i], audio_ids=audio_ids)
+                outputs, text_outputs = self(input_ids=input_ids[:, :i], audio_ids=audio_ids)
                 # Avoid other layer decode eos
                 if self.output_dim > 1:
                     outputs[:,1:,:,self.output_dim - 1] = float('-inf')
@@ -156,6 +193,12 @@ class SpeechUnitModel(nn.Module):
                     break
                 current_audio_ids = current_audio_ids+add_tensor
                 audio_ids = torch.cat([audio_ids, current_audio_ids], dim=-1)
+                current_text_ids = text_outputs.squeeze(0)[:,-1].argmax(-1).unsqueeze(-1).unsqueeze(0)
+                # print("[DEBUG] current_text_ids:", current_text_ids)
+                text_ids = torch.cat([text_ids, current_text_ids], dim=-1)
+        # print("[DEBUG] text generated:", text_ids)
+        print("[DEBUG] text generated:", self.tokenizer.decode(text_ids[0])) 
+        print("[DEBUG] input_ids decoded:", self.tokenizer.decode(input_ids[0]))        
         print("[DEBUG] Final shape of audio_ids:", audio_ids.shape)
         # delete bos token (first timestep)
         audio_ids = audio_ids[:, 1:]
@@ -172,6 +215,9 @@ class SpeechUnitModel(nn.Module):
         with torch.no_grad():
             # input dimension: (bs_size, 8, seq_len)
             audio_values = vocoder.decode(audio_ids)[0]
+            
+        if verbose:
+            print("[DEBUG][VERBOSE] Audio ids:", audio_ids)
         return audio_values
 
 
@@ -302,5 +348,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
