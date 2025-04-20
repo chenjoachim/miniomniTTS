@@ -31,12 +31,13 @@ class MimiUnitDataset(Dataset):
         # Process the text into Llama3 index
         # data_input = [{'role': 'assistant', "content": item[self.text_column]}]
         text = item[self.text_column]
-        input_ids = self.tokenizer.encode(text, return_tensors="pt")
+        input_ids = self.tokenizer.encode(text, return_tensors="pt", add_special_tokens=True)
 
         # Process the audio unit from list to tensor, and add index to each dimension
-        labels = torch.tensor(item[self.unit_column], dtype=torch.long)
+        labels = torch.tensor(item[self.unit_column], dtype=torch.long) # shape: [seq_len]
+        # print("[DEBUG]labels.shape: ", labels.shape)
         # Pad a BOS token in labels, which is codebook_size
-        labels = torch.cat([torch.full((1, labels.shape[1]), self.codebook_size, dtype=torch.long), labels], dim=0)
+        labels = torch.cat([torch.full((1,), 0, dtype=torch.long), labels, torch.full((1,), self.codebook_size + 1, dtype=torch.long)], dim=0)  # shape: [seq_len+2]  
         
         # input_ids = self.tokenizer.encode()
 
@@ -54,7 +55,7 @@ class MimiUnitDataset(Dataset):
 
         # If the label is longer than the input_ids, add padding
         if labels.shape[1] > input_ids.shape[1]+1:
-            padding = torch.full((1, labels.shape[1] - input_ids.shape[1]+1), self.tokenizer.eos_token_id, dtype=torch.long)
+            padding = torch.full((1, labels.shape[1] - input_ids.shape[1]+1), 0, dtype=torch.long)
             input_ids = torch.cat([input_ids, padding], dim=1)
         else:
             if idx + 1 < len(self):

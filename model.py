@@ -167,7 +167,7 @@ class SpeechUnitModel(nn.Module):
         #     )
         # # delete template index
         # input_ids = input_ids[:, 5:]
-        input_ids = self.tokenizer.encode(input_text, return_tensors="pt")
+        input_ids = self.tokenizer.encode(input_text, return_tensors="pt", add_special_tokens=True)
         _, seq_length = input_ids.shape
         input_ids = input_ids.to(next(self.parameters()).device)
         text_ids = torch.full((1, 1), (self.tokenizer.bos_token_id), device=next(self.parameters()).device)
@@ -176,12 +176,15 @@ class SpeechUnitModel(nn.Module):
         if max_length > seq_length:
             padding = torch.full((1, max_length - seq_length), self.tokenizer.eos_token_id, dtype=torch.long, device=next(self.parameters()).device)
             input_ids = torch.cat([input_ids, padding], dim=1)
+        print("[DEBUG] shape of input_ids after padding:", input_ids.shape)
         audio_ids = torch.full((self.num_heads, 1), (self.output_dim - 2), device=next(self.parameters()).device)
-        add_tensor = torch.zeros_like(audio_ids)
+        print("[DEBUG] shape of audio_ids after initially:", audio_ids.shape)
+        add_tensor = torch.full((self.num_heads, 1), 0, device=next(self.parameters()).device)
+        audio_ids = torch.cat([audio_ids, add_tensor], dim=1)
         for i in range(1, self.num_heads):
             add_tensor[i, :] = self.output_dim * (i)
         with torch.no_grad():
-            for i in range(1, max_length):
+            for i in range(2, max_length):
                 outputs, text_outputs = self(input_ids=input_ids[:, :i], audio_ids=audio_ids)
                 # Avoid other layer decode eos
                 if self.output_dim > 1:
@@ -193,6 +196,7 @@ class SpeechUnitModel(nn.Module):
                     break
                 current_audio_ids = current_audio_ids+add_tensor
                 audio_ids = torch.cat([audio_ids, current_audio_ids], dim=-1)
+
                 current_text_ids = text_outputs.squeeze(0)[:,-1].argmax(-1).unsqueeze(-1).unsqueeze(0)
                 # print("[DEBUG] current_text_ids:", current_text_ids)
                 text_ids = torch.cat([text_ids, current_text_ids], dim=-1)
@@ -201,7 +205,7 @@ class SpeechUnitModel(nn.Module):
         print("[DEBUG] input_ids decoded:", self.tokenizer.decode(input_ids[0]))        
         print("[DEBUG] Final shape of audio_ids:", audio_ids.shape)
         # delete bos token (first timestep)
-        audio_ids = audio_ids[:, 1:]
+        audio_ids = audio_ids[:, 2:]
         # process unit to original mimi codec
         add_tensor = torch.zeros_like(audio_ids)
         for i in range(1, self.num_heads):
