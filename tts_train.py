@@ -156,13 +156,43 @@ class SpeechUnitTrainer:
                 total_norm += param_norm.item() ** 2
         return total_norm ** 0.5
 
-    def _compute_batch_loss(self, input_ids, labels):
+    def _compute_batch_loss(self, input_ids, labels, scheduled_sampling_prob=0.0):
         batch_size = input_ids.size(0)
         assert batch_size == labels.size(0), f"Input and labels must have the same batch size. Got input {batch_size} and label {labels.size(0)}"
         bos_labels = torch.full((batch_size, self.vocoder_layer, 1), self.codebook_size).to(self.device)
         eos_labels = torch.full((batch_size, self.vocoder_layer, 1), self.codebook_size+1).to(self.device)
         pad_labels = torch.full((batch_size, self.vocoder_layer, 1), 0).to(self.device)
-        generate_audio_ids = torch.cat([bos_labels, labels], dim=-1)
+        # generate_audio_ids = torch.cat([bos_labels, labels], dim=-1)
+        if scheduled_sampling_prob > 0.0:
+            # Initialize with padding/BOS
+            current_input = bos_labels
+            all_inputs = [current_input]
+            
+            # Step through sequence for scheduled sampling
+            for t in range(labels.size(-1)):
+                # Decide whether to use ground truth or prediction
+                use_gt = torch.rand(batch_size, 1, 1).to(self.device) >= scheduled_sampling_prob
+                use_gt = use_gt.expand(-1, self.vocoder_layer, -1)
+                
+                if t > 0:  # For tokens after the first one
+                    # Get model prediction
+                    with torch.no_grad():
+                        temp_input = torch.cat(all_inputs, dim=-1)
+                        temp_logits, _ = self.model(input_ids=input_ids, audio_ids=temp_input)
+                        pred = torch.argmax(temp_logits[:, :, -1, :], dim=-1).unsqueeze(-1)
+                    
+                    # Mix ground truth and prediction
+                    next_token = torch.where(use_gt, labels[:, :, t:t+1], pred)
+                else:
+                    # Always use ground truth for first token
+                    next_token = labels[:, :, t:t+1]
+                    
+                all_inputs.append(next_token)
+                
+            generate_audio_ids = torch.cat(all_inputs, dim=-1)
+        else:
+            # Original behavior when scheduled sampling is disabled
+            generate_audio_ids = torch.cat([bos_labels, labels], dim=-1)
         logits, text_logits = self.model(input_ids=input_ids, audio_ids=generate_audio_ids)
         # Drop first predict tokens
         logits = logits.view(-1, self.codebook_size+2)
@@ -182,12 +212,12 @@ class SpeechUnitTrainer:
         text_logits = text_logits.reshape(-1, text_logits.size(-1))
         text_loss = self.criterion(text_logits, text_labels)
         # Get the max out of text_logits
-        text_logits = torch.argmax(text_logits, dim=-1)
-        print("LABEL:",self.model.tokenizer.decode(text_labels[:10].cpu().numpy()))
-        print("PRED:",self.model.tokenizer.decode(text_logits[:10].cpu().numpy()))
+        # text_logits = torch.argmax(text_logits, dim=-1)
+        # print("LABEL:",self.model.tokenizer.decode(text_labels[:10].cpu().numpy()))
+        # print("PRED:",self.model.tokenizer.decode(text_logits[:10].cpu().numpy()))
 
         # print("AUDIO LABEL:", labels[:10].cpu().numpy())
-        print("AUDIO PRED:", torch.argmax(logits, dim=-1)[:10].cpu().numpy())
+        # print("AUDIO PRED:", torch.argmax(logits, dim=-1)[:10].cpu().numpy())
         # Combine audio and text loss
         total_loss = audio_loss + text_loss
         return total_loss

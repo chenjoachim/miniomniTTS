@@ -4,6 +4,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from transformers import GenerationMixin, PreTrainedModel, AutoConfig
 from transformers.models.llama.modeling_llama import LlamaModel, LlamaRotaryEmbedding, LlamaConfig
 import matplotlib.pyplot as plt
@@ -126,7 +127,8 @@ class SpeechUnitModel(nn.Module):
                 audio_embedding = self.audio_project(audio_embedding)
                 audio_embedding = self.post_proj_norm(audio_embedding)
             weight_audio = torch.sum(audio_embedding * self.token_weights.view(1, -1, 1, 1), dim=1)
-
+            # Normalize the audio embedding to the same scale as the text embedding
+            weight_audio = F.normalize(weight_audio, p=2, dim=-1) * torch.sum(self.token_weights)
             hidden_states = (hidden_states + weight_audio) / (torch.sum(self.token_weights) + 1)
 
         if position_embeddings is None:
