@@ -128,7 +128,10 @@ class SpeechUnitModel(nn.Module):
                 audio_embedding = self.post_proj_norm(audio_embedding)
             weight_audio = torch.sum(audio_embedding * self.token_weights.view(1, -1, 1, 1), dim=1)
             # Normalize the audio embedding to the same scale as the text embedding
+            # print ("[DEBUG] weight_audio shape:", weight_audio.shape)
             weight_audio = F.normalize(weight_audio, p=2, dim=-1) * torch.sum(self.token_weights)
+            # print("[DEBUG] weight_audio shape after normalization:", weight_audio.shape)
+            # print("[DEBUG] hidden_states shape:", hidden_states.shape)
             hidden_states = (hidden_states + weight_audio) / (torch.sum(self.token_weights) + 1)
 
         if position_embeddings is None:
@@ -147,7 +150,7 @@ class SpeechUnitModel(nn.Module):
 
         # Prediction heads
         logits = [head(hidden_states) for head in self.heads]
-        logits = torch.stack(logits, dim=1)  # Output dimension: (batch size, 8, output_dim)
+        logits = torch.stack(logits, dim=1)  # Output dimension: (batch_size, num_heads, seq_len, output_dim)
         if self.lm_head is not None:
             lm_logits = self.lm_head(hidden_states)
             return logits, lm_logits
